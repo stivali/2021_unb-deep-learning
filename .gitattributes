@@ -1,0 +1,5 @@
+# HTMLs gerados pelo R Markdown
+*.html linguist-generated=true
+
+# Classificar os arquivos R Markdown como R
+*.Rmd linguist-language=R
