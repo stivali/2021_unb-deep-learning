@@ -1,0 +1,373 @@
+---
+title: "Lista 3 - Otimização em RNA'"
+author: "Matheus Stivali"
+date: "06/10/2021"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+### carregando pacotes
+library(tidyverse)
+library(ggmap)
+library(dplyr)
+library(ggplot2)
+library(latex2exp)
+library(NeuralNetTools)
+library(purrr)
+```
+
+# Introdução
+
+Este trabalho tem o objetivo de implementar diferentes métodos de otimização no contexto das redes neurais artificiais utilizando a linguagem R.
+
+Para as diferentes tarefas propostas vamos considerar a função:
+
+$$
+f(x_1,x_2) = x_1^4 + x_2^4 + x_1^2x_2 + x_1x_2^2 - 20 x_1^2 - 15 x_2^2
+$$
+
+```{r }
+funcao <- function(x,y) {
+  z <- (x^4) + (y^4) + ((x^2) * y) + (x * (y^2)) - (20*x^2) - (15*y^2)
+  return(z)
+}
+
+```
+
+## 1. Curvas de nível e pontos críticos de $f(x_1,x_2)$ 
+
+A primeira tarefa consiste apresentar as curvas de nível de $f(x_1,x_2)$ e tentar identificar através de inspeção visual o número de pontos críticos dessa função.
+
+Os gráficos abaixo apresentam as curvas de nível em duas escalas, o primeiro na região $[-10,10] \times [-10, 10]$ e o segundo na região $[-5,5] \times [-5, 5]$.
+
+Pelo segundo gráfico a função parece ter **4 pontos críticos**, o que é coerente com ela ser um polinômio de grau 4.
+
+```{r }
+dados10 <- expand.grid( x1 = seq(-10,10,0.1),
+                         x2 = seq(-10,10,0.1)) %>%
+           as.data.frame()
+
+dados10 <- cbind(dados10, 
+                 z = (dados10$x1^4) + (dados10$x2^4) + ((dados10$x1^2) * 
+                        dados10$x2) + (dados10$x1 * (dados10$x2^2)) - 
+                     (20*dados10$x1^2) - (15*dados10$x2^2))
+
+dados5 <- expand.grid( x1 = seq(-5,5,0.1),
+                        x2 = seq(-5,5,0.1)) %>%
+          as.data.frame()
+
+dados5 <- cbind(dados5, 
+                z = (dados5$x1^4) + (dados5$x2^4) + ((dados5$x1^2) * dados5$x2) + 
+                    (dados5$x1 * (dados5$x2^2)) - (20*dados5$x1^2) - 
+                    (15*dados5$x2^2))
+
+ggplot(dados10, aes(x=x1, y=x2, z=z)) + 
+  geom_contour_filled()
+
+ggplot(dados5, aes(x=x1, y=x2, z=z)) + 
+  geom_contour_filled()
+```
+
+
+## 2. Gradiente de $f(x_1,x_2)$ em relação a $x = (x_1,x_2)$
+
+A segunda tarefa consiste em determinar o vetor gradiente de $f(x_1,x_2)$.
+
+$$
+\nabla_{x}f(x) = \bigg( \frac{\partial f}{\partial x_1};\frac{\partial f}{\partial x_2} \bigg) \\
+\frac{\partial f}{\partial x_1} = 4x_1^3 + 2x_1x_2 + x_2^2 - 40x_1 \\
+\frac{\partial f}{\partial x_1} = 4x_2^3 + x_1^2 + 2x_1x_2 - 30x_2 \\
+\nabla_{x}f(x) = 
+\pmatrix{
+\dfrac{\partial f}{\partial x_1} \\
+\dfrac{\partial f}{\partial x_1}
+} =
+\pmatrix{
+4x_1^3 + 2x_1x_2 + x_2^2 - 40x_1 \\
+4x_2^3 + x_1^2 + 2x_1x_2 - 30x_2
+}
+$$
+
+## 3. Minimização pelo método do gradiente: função computacional
+
+A terceira tarefa é implementar uma função de otimização pelo método do gradiente que permita especificar o ponto inicial, o número de passos e a taxa de aprendizagem.
+
+
+```{r }
+min_grad <- function(x1,x2,tx,n){
+  for (i in seq_len(n)){
+    g1 <- (4 * x1^3) + (2*x1*x2) + (x2^2) - (40*x1)
+    g2 <- (4 * x2^3) + (2*x1*x2) + (x1^2) - (30*x1)
+    if(is.nan(g1) | is.nan(g2) | (g1==0 & g2 == 0)){
+      break
+    }
+    x1 <- x1 - (tx * g1)
+    x2 <- x2 - (tx * g2)
+    #print(c(x1,x2,g1,g2))
+    min <- c(x1,x2)
+  }
+  print(paste0("Com taxa de aprendizagem ", tx," o mínimo é obtido no passo ", i, " em (x1,x2) = ")) 
+  return(min)
+}
+```
+
+
+## 4. Aplicação do método do gradiente: $(x_1^{(0)},x_2^{(0)}) = (0,5)$, taxa de aprendizado 0,01 por 100 passos.
+
+Esta tarefa é utilizar a função de otimização implementada na tarefa 3 para encontrar o valor mínimo partindo do ponto inicial $(x_1^{(0)},x_2^{(0)}) = (0,5)$, com taxa de aprendizado 0,01, e com 100 iterações.
+
+```{r }
+min_grad(0,5,0.01,100)
+```
+
+
+
+## 5. Aplicação do método do gradiente: diferentes taxas de aprendizado.
+
+O objetivo desta tarefa é repetir a tarefa anterior com diferentes taxas de aprendizagem.
+
+### 5.1. Taxa de aprendizagem = 1
+```{r }
+min_grad(0,5,1,100)
+```
+
+### 5.2. Taxa de aprendizagem = 0,1
+```{r }
+min_grad(0,5,0.1,100)
+```
+
+### 5.3. Taxa de aprendizagem = 0,01
+```{r }
+min_grad(0,5,0.01,100)
+```
+
+### 5.4. Taxa de aprendizagem = 0,001
+```{r }
+min_grad(0,5,0.001,100)
+```
+
+### 5.5. Taxa de aprendizagem = 0,0001
+```{r }
+min_grad(0,5,0.0001,100)
+```
+
+
+## 6. Aplicação do método do gradiente: diferentes pontos de origem.
+
+Esta tarefa repete o exercício da tarefa 4, mas com diferentes pontos de origem. São considerados 20 pontos de origem alternativos selecionados na região $[-5,5] \times [-5, 5]$ de acordo com uma distribuição uniforme.
+
+```{r }
+min_grad2 <- function(x1,x2,tx,n){
+  caminho <- data.frame()
+  for (i in seq_len(n)){
+    g1 <- (4 * x1^3) + (2*x1*x2) + (x2^2) - (40*x1)
+    g2 <- (4 * x2^3) + (2*x1*x2) + (x1^2) - (30*x1)
+    if(is.nan(g1) | is.nan(g2) | (g1==0 & g2 == 0)){
+      break
+    }
+    caminho <- do.call(rbind, list(caminho, c(x1,x2,0)), envir = environment())
+    x1 <- x1 - (tx * g1)
+    x2 <- x2 - (tx * g2)
+    min <- c(x1,x2)
+  }
+  colnames(caminho) <- c("x1", "x2", "z")
+  return(caminho)
+}
+
+set.seed(123)
+ptos_iniciais <- matrix(runif(40,-5,5), ncol = 2, byrow = FALSE)
+ptos_iniciais <- as.data.frame(cbind(ptos_iniciais,rep(0,20)))
+colnames(ptos_iniciais) <- c("x1", "x2", "z")
+
+for (i in 1:20){
+  x1 <- ptos_iniciais[i,1]
+  x2 <- ptos_iniciais[i,2]
+  assign(paste("Caminho", i, sep = "_"), min_grad2(x1,x2,0.01,100))
+  rm(x1,x2,i)
+}
+
+ptos_finais <- data.frame()
+for (i in 1:20){
+  ptos_finais <- rbind(ptos_finais, get(paste0("Caminho_", i))[100,])
+}
+
+
+dados5 <- expand.grid( x1 = seq(-5,5,0.1),
+                        x2 = seq(-5,5,0.1)) %>%
+          as.data.frame()
+
+dados5 <- cbind(dados5, 
+                z = (dados5$x1^4) + (dados5$x2^4) + ((dados5$x1^2) * dados5$x2) + 
+                    (dados5$x1 * (dados5$x2^2)) - (20*dados5$x1^2) - 
+                    (15*dados5$x2^2))
+
+ggplot(dados5, aes(x=x1, y=x2, z=z)) +
+  geom_contour_filled() +
+  geom_line(data = Caminho_1) + 
+  geom_line(data = Caminho_2) +
+  geom_line(data = Caminho_3) +
+  geom_line(data = Caminho_4) +
+  geom_line(data = Caminho_5) +
+  geom_line(data = Caminho_6) +
+  geom_line(data = Caminho_7) +
+  geom_line(data = Caminho_8) +
+  geom_line(data = Caminho_9) +
+  geom_line(data = Caminho_10) +
+  geom_line(data = Caminho_11) +
+  geom_line(data = Caminho_12) +
+  geom_line(data = Caminho_13) +
+  geom_line(data = Caminho_14) +
+  geom_line(data = Caminho_15) +
+  geom_line(data = Caminho_16) +
+  geom_line(data = Caminho_17) +
+  geom_line(data = Caminho_18) +
+  geom_line(data = Caminho_19) +
+  geom_line(data = Caminho_20) +
+  geom_point(data = ptos_iniciais, 
+             inherit.aes = FALSE, aes(x=x1,y=x2),
+             colour = "red") +
+  geom_point(data = ptos_finais, 
+             inherit.aes = FALSE, aes(x=x1,y=x2),
+             colour = "blue")
+```
+
+O mínimo global foi encontrado em **9 das 20 (45%)** tentativas. No gráfico acima os pontos de partida são exibidos em vermelho.
+
+
+## 7. Aplicação do método do gradiente com momento: $(x_1^{(0)},x_2^{(0)}) = (0,5)$, taxa de aprendizado 0,01 por 100 passos.
+
+Nesta tarefa o algoritmo do gradiente descendente é alterado para incorporar a idéia de "momento", em que o gradiente da iteração (t-1) continua afetando a direção de busca de acordo com uma taxa definida (`alfa=0.9`).
+
+
+```{r }
+min_grad_mom <- function(x1,x2,tx,n,alfa){
+  caminho <- data.frame()
+  v1 = 0 # Velocidade inicial
+  v2 = 0 # Velocidade inicial
+  for (i in seq_len(n)){
+    g1 <- (4 * x1^3) + (2*x1*x2) + (x2^2) - (40*x1)
+    g2 <- (4 * x2^3) + (2*x1*x2) + (x1^2) - (30*x1)
+    if(is.nan(g1) | is.nan(g2) | (g1==0 & g2 == 0)){
+      break
+    }
+    caminho <- do.call(rbind, list(caminho, c(x1,x2,0)), envir = environment())
+    v1 = (alfa * v1) - (tx * g1)
+    v2 = (alfa * v2) - (tx * g2)
+    x1 <- x1 + v1
+    x2 <- x2 +v2
+    min <- c(x1,x2)
+  }
+  colnames(caminho) <- c("x1", "x2", "z")
+  return(caminho)
+}
+
+cam_grad_mom <- min_grad_mom(0,5,0.01,100,0.9)
+
+ggplot(dados5, aes(x=x1, y=x2, z=z)) +
+  geom_contour_filled() +
+  geom_line(data = cam_grad_mom, colour = "red") 
+```
+
+
+## 8. Aplicação do método RMSProp: $(x_1^{(0)},x_2^{(0)}) = (0,5)$, taxa de aprendizado 0,01 por 100 passos.
+
+Esta tarefa consiste em implementar o algoritmo RMSProp, que consiste em "acumular" os gradientes de passos anteriores, de acordo com uma média móvel, para definir a direção de busca.
+
+
+```{r }
+min_rmsprop <- function(x1,x2,tx,n,decaimento){
+  caminho <- data.frame()
+  delta <- 10^(-6)
+  acumulacao1 <- 0
+  acumulacao2 <- 0
+  for (i in seq_len(n)){
+    g1 <- (4 * x1^3) + (2*x1*x2) + (x2^2) - (40*x1)
+    g2 <- (4 * x2^3) + (2*x1*x2) + (x1^2) - (30*x1)
+    if(is.nan(g1) | is.nan(g2) | (g1==0 & g2 == 0)){
+      break
+    }
+    caminho <- do.call(rbind, list(caminho, c(x1,x2,0)), envir = environment())
+    acumulacao1 <- (decaimento * acumulacao1) + ( (1-decaimento)*g1^2 )
+    acumulacao2 <- (decaimento * acumulacao2) + ( (1-decaimento)*g2^2 )
+    x1 <- x1 - ((tx / (delta + sqrt(acumulacao1))) * g1)
+    x2 <- x2 - ((tx / (delta + sqrt(acumulacao2))) * g2)
+    min <- c(x1,x2)
+  }
+  colnames(caminho) <- c("x1", "x2", "z")
+  return(caminho)
+}
+
+cam_rmsprop <- min_rmsprop(0,5,0.001,100,0.9)
+
+ggplot(dados5, aes(x=x1, y=x2, z=z)) +
+  geom_contour_filled() +
+  geom_line(data = cam_rmsprop, colour = "blue") 
+```
+
+## 9. Aplicação do método ADAM: $(x_1^{(0)},x_2^{(0)}) = (0,5)$, taxa de aprendizado 0,001, taxa de decaimento 0,9, constante $10^{-6}$ por 100 passos.
+
+Esta tarefa consiste em implementar o algoritmo Adam, que consiste em "acumular" os gradientes de passos anteriores, de acordo com uma média móvel, para definir a direção de busca.
+
+
+```{r }
+min_adam <- function(x1,x2,tx,n,ro1,ro2){
+  caminho <- data.frame()
+  delta <- 10^(-8)
+  fm1 <- 0
+  fm2 <- 0
+  sm1 <- 0
+  sm2 <- 0
+  for (i in seq_len(n)){
+    g1 <- (4 * x1^3) + (2*x1*x2) + (x2^2) - (40*x1)
+    g2 <- (4 * x2^3) + (2*x1*x2) + (x1^2) - (30*x1)
+    if(is.nan(g1) | is.nan(g2) | (g1==0 & g2 == 0)){
+      break
+    }
+    caminho <- do.call(rbind, list(caminho, c(x1,x2,0)), envir = environment())
+    fm1 <- ((ro1 * fm1) + ((1-ro1)*g1)) / (1-ro1^i)
+    fm2 <- ((ro1 * fm2) + ((1-ro1)*g2)) / (1-ro1^i)
+    sm1 <- ((ro2 * sm1) + ((1-ro2)*g1^2)) / (1-ro2^i)
+    sm2 <- ((ro2 * sm2) + ((1-ro2)*g2^2)) / (1-ro2^i)
+    update1 <- tx * (fm1/(sqrt(sm1)+delta))
+    update2 <- tx * (fm2/(sqrt(sm2)+delta))
+    x1 <- x1 - update1
+    x2 <- x2 - update2
+    min <- c(x1,x2)
+  }
+  colnames(caminho) <- c("x1", "x2", "z")
+  return(caminho)
+}
+
+cam_adam <- min_adam(0,5,0.001,1000,0.9,0.999)
+
+ggplot(dados5, aes(x=x1, y=x2, z=z)) +
+  geom_contour_filled() +
+  geom_line(data = cam_adam, colour = "blue") 
+```
+
+## 10. Caminhos de otimização: gradiente, gradiente com momento, RMSProp, e ADAM
+
+```{r }
+cam_grad <- min_grad2(0,5,0.01,100)
+cam_grad_mom <- min_grad_mom(0,5,0.01,100,0.9)
+cam_rmsprop <- min_rmsprop(0,5,0.001,10000,0.9)
+cam_adam <- min_adam(0,5,0.001,10000,0.9,0.999)
+
+ggplot(dados5, aes(x=x1, y=x2, z=z)) +
+  geom_contour_filled() +
+  geom_line(data = cam_grad, colour = "black") +
+  geom_line(data = cam_grad_mom, colour = "blue") +
+  geom_line(data = cam_rmsprop, colour = "red") +
+  geom_line(data = cam_adam, colour = "orange")
+```
+
+
+## 11. Recursos consultados
+
+GOODFELLOW, I.; BENGIO, Y.; COURVILLE, A. Deep learning. Cambridge, Massachusetts: The MIT Press, 2016.
+
+
+

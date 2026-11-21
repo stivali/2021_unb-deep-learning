@@ -1,0 +1,884 @@
+---
+title: "Lista 2 - Dropout e Keras"
+author: "Matheus Stivali"
+date: "21/09/2021"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+
+# Introdução
+
+Este trabalho tem o objetivo de incluir a técnica de regularização *dropout* rede neural implementada na Lista 1. Adicionalmente essa rede neural que foi implementada "na mão" na Lista 1 será implementada pelo pacote keras.
+
+Na lista 1 o algoritmo de *backpropagation* foi implemnetado de forma errada (fazendo elemento a elemento), nesta versão do código isso foi corrigido para incorporar o cálculo matricial.
+
+O processo gerador de dados "real" que se busca identificar e estimar é dado por:
+
+$$
+Y \sim N(\mu,\sigma = 1) \\
+\mu = |X_{1}^{3} - 30 \times sen(X_{2}) + 10| \\
+X_{j} \sim \text{Uniforme(-3,3);  j=1,2.}
+$$
+O código abaixo gera esses dados, armazenado no objetos `dados`, e já os divide em conjunto de treinamento e de teste.
+
+```{r setup, include=FALSE}
+### carregando pacotes
+library(dplyr)
+library(ggplot2)
+library(latex2exp)
+library(NeuralNetTools)
+library(purrr)
+library(tensorflow)
+library(keras)
+library(tictoc)
+```
+
+```{r }
+##########################################################################
+### Gerando dados "observados"
+##########################################################################
+set.seed(2.2020)
+m.obs <- 100000
+dados <- tibble(x1.obs=runif(m.obs, -3, 3),
+                x2.obs=runif(m.obs, -3, 3)) %>%
+  mutate(mu=abs(x1.obs^3 - 30*sin(x2.obs) + 10),
+         y=rnorm(m.obs, mean=mu, sd=1))
+
+##########################################################################
+## Divisão do conjunto de dados
+##########################################################################
+X_trein <- as.matrix(dados[1:80000,1:2])
+X_teste <- as.matrix(dados[80001:100000,1:2])
+Y_trein <- as.matrix(dados[1:80000,4])
+Y_teste <- as.matrix(dados[80001:100000,4])
+```
+
+
+A rede neural que se quer ajustar tem uma camada escondida contendo dois neurônios, podendo ser descrita por:
+
+$$
+\text{Camada escondida:} \\
+h_1 = \phi(x_1w_1+x_2w_3 + b_1) = \phi(a_1) \\
+h_2 = \phi(x_1w_2+x_2w_4 + b_2) = \phi(a_2) \\
+\text{Camada de saída:} \\
+\hat{y} = h_1w_5+h_2w_6 + b_3
+$$
+Ou então, matricialmente (os subscritos indicam as dimensões das matrizes):
+
+
+$$
+\underbrace{
+y_{1,n} = 
+\begin{bmatrix}
+y_{1} \\
+y_{2} \\
+\ldots
+\end{bmatrix}}_{\text{Dados observados}}
+;\hspace{5pt}
+\underbrace{
+X_{2,n} = 
+\begin{bmatrix}
+x_{1,1} & x_{1,2} \\
+x_{2,1} & x_{2,2} \\
+\ldots & \ldots
+\end{bmatrix}}_{\text{Matrix Design}}
+;\hspace{5pt}
+\underbrace{
+\theta_{1,9}^T = (w_1, w_2, w_3, w_4, w_5, w_6, b_1, b_2, b_3)
+}_{\text{Vetor de pesos}} \\
+\underbrace{
+W^{(1)}_{2,2} = 
+\begin{bmatrix}
+w_{1} & w_{2} \\
+w_{3} & w_{4}
+\end{bmatrix}}_{\text{Pesos da 1ª camada}}
+;\hspace{5pt}
+\underbrace{
+b^{(1)}_{2,1} = 
+\begin{bmatrix}
+b_{1} \\
+b_{2}
+\end{bmatrix}}_{\text{Vieses da 1ª camada}} 
+;\hspace{5pt}
+\underbrace{
+W^{(2)}_{1,2} = 
+\begin{bmatrix}
+w_{5} \\
+w_{6} 
+\end{bmatrix}}_{\text{Pesos da 2ª camada}}
+;\hspace{5pt}
+\underbrace{
+b^{(2)}_{1,1} = 
+b_{3}}_{\text{Viés da 2ª camada}}
+;\hspace{5pt}
+\underbrace{
+\phi(x) = \dfrac{1}{1+e^{-x}} 
+}_{\text{Função de ativação}}\\
+h_{2,1} = \phi ( XW^{(1)}+ [b^{(1) T}] ) = \phi(a_{2,1}) = 
+\underbrace{
+\begin{bmatrix}
+h_{1,1} & h_{1,2} \\
+h_{2,1} & h_{2,2} \\
+\ldots & \ldots
+\end{bmatrix}_{n,2}}_{\text{Resultado da 1ª camada}} \\
+\hat{y}_{n,1} = h W^{(2)} + [b_{3}]_{n,1} = 
+\underbrace{
+\begin{bmatrix}
+\hat{y}_{1} \\
+\hat{y}_{2} \\
+\ldots
+\end{bmatrix}_{n,1}}_{\text{Saída}} \\
+$$
+
+Isto é, os dados de input da *matriz design* ($x_{i,1}$ e $x_{i,2}$) são transformados na primeira camada pela aplicação em sequência de uma transormação linear ($W^{(1)}$) e de uma transformação não linear $\phi(.)$. Onde $\phi(.)$ é a função de ativação logística: $\phi(x) = \dfrac{1}{1+e^{-x}}$
+Finalmente, os resultados da camada escondida são levados a camada de saída por uma outra transformação linear ($W^{(2)}$). Cada transformação linear é acompanhada da soma dos viéses ($b^{(1)}$ e $b^{(2)}$, respectivamente).
+
+A função custo que se adotou para esta rede é:
+
+$$
+J(\theta) = \dfrac{1}{m} \sum^{m}_{i=1}L(f(x_{1,i},x_{2,i}),y_i) = \dfrac{\sum^{m}_{i=1}(y_i - \hat{y}_i)^2}{m}
+$$
+
+
+A implementação da Lista 1 é apresentada abaixo:
+
+
+```{r }
+##########################################################################
+## Definindo os valores:
+##########################################################################
+X <- X_trein
+Y <- Y_trein
+theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+
+##########################################################################
+## Agrupando os componentes em uma lista
+##########################################################################
+componentes1 <- list(entrada = X, 
+                    observado = Y,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                       nrow=dim(X)[1], ncol=dim(X)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                        nrow=dim(X)[1], ncol=dim(X)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y)[1]), ncol=1)
+                    )
+
+#############################################
+# Phi - função de ativação logística
+#############################################
+fih <- function(x) {
+  1 / (1 + exp(-x))
+  }
+
+#############################################
+# Phi_linha - derivada da função logística
+#############################################
+fih_linha <- function(x) {
+ ( 1 / (1 + exp(-x)) ) * ( 1 - (1 / (1 + exp(-x))) )
+ }
+
+##########################################################################
+## Função de previsão
+##########################################################################
+previsao <- function(rn) {
+  rn$camada_tl <- (rn$entrada %*% rn$pesos_c1) + rn$vies_c1
+  rn$camada_tnl <- fih(rn$camada_tl)
+  rn$saida <- (rn$camada_tnl %*% rn$pesos_cs) + rn$vies_cs
+  return(rn)
+  }
+
+##########################################################################
+## Função de custo
+##########################################################################
+custo <- function(rn){
+  mean((rn$observado - rn$saida)^2)
+}
+```
+
+
+A correção em relação a lista 1 é o algorítmo de back-propagation, que agora foi feito da forma matricial:
+
+
+```{r }
+#############################################
+# Função gradiente
+#############################################
+gradiente <- function(rn){
+  gradi <- rep(0,9)
+  
+  g1 <- -2 / dim(rn$observado)[1] * (rn$observado - rn$saida)
+  
+     gradi[9] <- sum(g1)
+     
+  g2 <- g1 %*% t(rn$pesos_cs) * fih_linha(rn$camada_tl)
+     
+     gradi[7:8] <- colSums(g2)
+     
+     gradi[5:6] <- t(rn$camada_tnl) %*% g1
+     
+     gradi[1:4] <- t(t(rn$entrada) %*% g2)
+     
+  return(gradi)
+}
+
+componentes1 <- previsao(componentes1)
+custo(componentes1)
+gradiente(componentes1)
+```
+
+
+```{r }
+#######################################################
+## Parâmetros de inicialização
+#######################################################
+X <- X_trein
+Y <- Y_trein
+theta_0 <- c(0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+n <- 100 # Número de iterações
+tx_aprendisagem <- 0.1
+
+componentes1 <- list(entrada = X, 
+                    observado = Y,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                       nrow=dim(X)[1], ncol=dim(X)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                        nrow=dim(X)[1], ncol=dim(X)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y)[1]), ncol=1)
+                    )
+
+##############################################
+## Log do custo ao longo das iterações
+##############################################
+custo_evol <- data.frame(
+  iteracao = 1:n,
+  cost = rep(0,n)
+)
+# Armazena os parâmetros de cada iteração
+thetas <- data.frame()
+
+##############################################
+## Gradiente descendente
+##############################################
+for (i in seq_len(n)){
+    # Estimativa
+    componentes1 <- previsao(componentes1)
+    # Cálculo do custo
+    custo_evol$cost[i] <- custo(componentes1)
+    # Atualização dos parâmetros
+    thetas <- rbind(thetas, theta_0)
+    theta_0 <- theta_0 - (tx_aprendisagem * gradiente(componentes1))  
+    componentes1$pesos_c1 <- matrix(theta_0[1:4], nrow = 2, byrow = TRUE)
+    componentes1$vies_c1 <- matrix(theta_0[7:8], ncol = 2, nrow = dim(X_trein)[1], byrow=TRUE)
+    componentes1$pesos_cs <- matrix(theta_0[5:6], nrow = 2, byrow = TRUE)
+    componentes1$vies_cs <- matrix(theta_0[9], ncol = 1, nrow = dim(Y_trein)[1], byrow = TRUE)
+  }
+
+custo_evol[which.min(custo_evol$cost),]
+```
+
+
+
+## 1. Dropout na camada de entrada e intermediária 
+
+A primeira tarefa deste trabalho é incluir uma regra de *dropout* na camada de entrada e intermediária da rede neural.
+
+A técnica de dropout é uma técnica de regularização de redes neurais que visa evitar o sobre-ajustamento (overfitting) devido à chamada "co-adaptação" no treinamento das redes. A coadaptação corresponde a diferentes neurônios identificando as mesmas *features* e sendo em algum grau redundantes. Como aponta Lewis(2016, p.53) a coadaptação é um conceito próximo a multicolinearidade em regressão linear.
+
+O dropout corresponde a desativar de forma aleatória alguns neurônios da rede durante o seu treinamento de forma que o processo de treinamento inclua as "sub-redes" derivadas da especificação original na definição dos pesos.
+
+Aqui a implementação do dropout é realizada considerando duas *máscaras de dropout*, uma aplicada a camada de entrada e outra a camada escondida. A inclusão dessas máscaras é representada matricialmente abaixo.
+
+
+$$
+d_{i,j} \sim Binomial(p)\\
+D^{(1)}_{n,2} = 
+\underbrace{
+\begin{bmatrix}
+d_{1,1} & d_{1,2} \\
+d_{2,1} & d_{2,2} \\
+\ldots & \ldots
+\end{bmatrix}_{n,2}}_{\text{Máscara de dropout da 1ª camada}}
+\hspace{10pt}
+D^{(2)}_{n,2} = 
+\underbrace{
+\begin{bmatrix}
+d_{1,1} & d_{1,2} \\
+d_{2,1} & d_{2,2} \\
+\ldots & \ldots
+\end{bmatrix}_{n,2}}_{\text{Máscara de dropout da 2ª camada}} \\[15pt]
+$$
+
+$$
+\text{Representação matricial com máscaras de dropout:} \\[15pt]
+(X \odot D^{(1)} ) W^{(1)}+ [b^{(1) T}] = A \\
+H = \phi(A) \\
+\hat{Y} = (H \odot D^{(2)} ) W^{(2)}+ [b^{(2) T}] \\
+$$
+Para implementar computacionalmente essa formulação com o dropout é necessário alterar tanto a função de previsão (feed-forward) quanto o gradiente da função custo que ajustará os pesos durante o treinamento da reda.
+
+Quanto a função de previsão (`previsao_drop`) ela é ajustada para considerar as máscaras de dropout.
+
+
+```{r }
+##########################################################################
+## Função de previsão com dropout
+##########################################################################
+previsao_drop <- function(rn) {
+  rn$camada_tl <- ((rn$entrada*rn$D1) %*% rn$pesos_c1) + (rn$vies_c1*rn$D1)
+  rn$camada_tnl <- fih(rn$camada_tl)
+  rn$saida <- ((rn$camada_tnl*rn$D2) %*% rn$pesos_cs) + rn$vies_cs
+  return(rn)
+  }
+```
+
+
+Já a função gradiente tem que ser alterada porque as máscaras vão influenciar as derivadas.
+
+$$
+\dfrac{\partial J(\theta)}{\partial \theta_j} = 
+    \dfrac{-2}{m} \times \bigg( \mathbf{1}_{1,n} \times (Y - \hat{Y})_{n,1} \bigg) \times \bigg( \dfrac{\partial \hat{Y}}{\partial \theta} \bigg) \\
+\dfrac{\partial \hat{Y}}{\partial W^{(1)}} = 
+    \bigg( \underbrace{\dfrac{\partial H}{\partial W^{(1)}}}_{X \odot D^{(1)} \times        \phi'(A)} \odot D^{(2)} \bigg) \times W^{(2)} = \bigg( X \odot D^{(1)} \times           \phi'(A) \odot D^{(2)} \bigg) \times W^{(2)}\\
+\dfrac{\partial \hat{Y}}{\partial b^{(1)}} = 
+    \bigg( \underbrace{\dfrac{\partial H}{\partial b^{(1)}}}_{\phi'(A)} \odot D^{(2)} \bigg) \times W^{(2)} = \bigg( \phi'(A) \odot D^{(2)} \bigg) \times W^{(2)}\\
+\dfrac{\partial \hat{Y}}{\partial W^{(2)}} = H \odot D^{(2)} = \phi(A) \odot D^{(2)}\\  
+\dfrac{\partial \hat{Y}}{\partial b^{(2)T}} = 1\\  
+$$
+
+
+```{r }
+#############################################
+# Função gradiente com dropout
+#############################################
+gradiente_drop <- function(rn){
+  
+  gradi <- rep(0,9)
+  
+  g1 <- -2 / dim(rn$observado)[1] * (rn$observado - rn$saida)
+  
+     gradi[9] <- sum(g1)
+     
+  g2 <- g1 %*% t(rn$pesos_cs) * (fih_linha(rn$camada_tl) * rn$D2)
+     
+     gradi[7:8] <- colSums(g2)
+     
+     gradi[5:6] <- t(rn$camada_tnl * rn$D2) %*% g1
+     
+     gradi[1:4] <- t(t(rn$entrada * rn$D1) %*% g2)
+     
+  return(gradi)
+}
+```
+
+
+Com esses ajustes pode-se obter tanto o **custo da rede** nos dados de **teste** quanto o menor custo em 100 iterações.
+
+
+```{r }
+#######################################################
+## Parâmetros de inicialização
+#######################################################
+set.seed(092021)
+X <- X_trein
+Y <- Y_trein
+theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+prob_in = 0.6
+n <- 100 # Número de iterações
+tx_aprendisagem <- 0.1
+
+componentes2 <- list(entrada = X, 
+                    observado = Y,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X)[1], byrow=TRUE),
+                    D1 = matrix(rbinom(dim(X)[1]*dim(X)[2],1,prob_in), ncol=2, byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                       nrow=dim(X)[1], ncol=dim(X)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                        nrow=dim(X)[1], ncol=dim(X)[2],
+                                        byrow = TRUE),
+                    D2 = matrix(rbinom(dim(X)[1]*dim(X)[2],1,prob_in), ncol=2, byrow=TRUE),
+                    saida = matrix(rep(0,dim(Y)[1]), ncol=1)
+                    )
+
+```
+
+O custo para essa rede é de `670.3107`
+
+```{r }
+rede_drop1 <- previsao(componentes2)
+custo(rede_drop1)
+```
+E o processo de minimização via gradiente descendente em 100 iterações encontra um custo mínimo de `147.0218` na iteração **72**.
+
+```{r }
+##############################################
+## Log do custo ao longo das iterações
+##############################################
+custo_evol_drop <- data.frame(
+  iteracao = 1:n,
+  cost = rep(0,n)
+)
+# Armazena os parâmetros de cada iteração
+thetas <- data.frame()
+
+##############################################
+## Gradiente descendente
+##############################################
+for (i in seq_len(n)){
+    # Estimativa
+    componentes2 <- previsao_drop(componentes2)
+    # Cálculo do custo
+    custo_evol_drop$cost[i] <- custo(componentes2)
+    # Atualização dos parâmetros
+    thetas <- rbind(thetas, theta_0)
+    theta_0 <- theta_0 - (tx_aprendisagem * gradiente_drop(componentes2))  
+    componentes2$pesos_c1 <- matrix(theta_0[1:4], nrow = 2, byrow = TRUE)
+    componentes2$vies_c1 <- matrix(theta_0[7:8], ncol = 2, nrow = dim(X_trein)[1], byrow=TRUE)
+    componentes2$pesos_cs <- matrix(theta_0[5:6], nrow = 2, byrow = TRUE)
+    componentes2$vies_cs <- matrix(theta_0[9], ncol = 1, nrow = dim(Y_trein)[1], byrow = TRUE)
+}
+
+custo_evol[which.min(custo_evol_drop$cost),]
+```
+
+## 2. Estimativa pontual e intervalar para $y_1$
+
+Está seção obtem uma estimativa pontual e outra intervalar para o valor de $y_{T1}$, isto é, para a primeira observação do conjunto de teste.
+
+Essas estimativas são obtidas a partir de 200 estimativas utilizando os pesos da rede treinada e a máscara de dropout.
+
+
+```{r }
+#######################################################
+## Parâmetros de estimativas
+#######################################################
+X200 <- matrix(X_teste[1,], nrow = 200, ncol = 2, byrow = TRUE)
+Y200 <- matrix(Y_teste[1,], nrow = 200, byrow = TRUE)
+
+componentes3 <- list(entrada = X200, 
+                    observado = Y200,
+                    pesos_c1 = componentes2$pesos_c1, 
+                    vies_c1 = componentes2$vies_c1[1:dim(X200)[1]],
+                    D1 = componentes2$D1[1:dim(X200)[1]],
+                    pesos_cs = componentes2$pesos_cs, 
+                    vies_cs = componentes2$vies_cs[1:dim(X200)[1]],
+                    camada_tl = matrix(rep(0,dim(X200)[1]*dim(X200)[2]), 
+                                       nrow=dim(X200)[1], ncol=dim(X200)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X200)[1]*dim(X200)[2]), 
+                                        nrow=dim(X200)[1], ncol=dim(X200)[2],
+                                        byrow = TRUE),
+                    D2 = componentes2$D2[1:dim(X200)[1]],
+                    saida = matrix(rep(0,dim(X200)[1]), ncol=1)
+                    )
+
+y1_hat <- previsao_drop(componentes3)
+
+mean(y1_hat$saida)
+quantile(y1_hat$saida, probs = c(0.025,0.975))
+```
+A estimativa pontual é de `20.93216`, com um IC de `[18.05749; 27.33061]`. 
+
+## 3. Estimativa pontual $Y_{treinamento}$
+
+Esse seção reproduz a estimativa pontual obtida para a primeira observação do conjunto de treinamento para todos os elementos desse conjunto.
+
+
+```{r }
+Y_teste_hat = matrix(ncol = 1, nrow = 20000)
+
+for (i in seq_len(dim(X_teste)[1])){
+
+  X_loop <- matrix(X_teste[i,], nrow = 200, ncol = 2, byrow = TRUE)
+
+  comp_loop <- list(entrada = X_loop, 
+                    pesos_c1 = componentes2$pesos_c1, 
+                    vies_c1 = componentes2$vies_c1[1:dim(X_loop)[1]],
+                    D1 = componentes2$D1[1:dim(X_loop)[1]],
+                    pesos_cs = componentes2$pesos_cs, 
+                    vies_cs = componentes2$vies_cs[1:dim(X_loop)[1]],
+                    camada_tl = matrix(rep(0,dim(X_loop)[1]*dim(X_loop)[2]), 
+                                       nrow=dim(X_loop)[1], ncol=dim(X_loop)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X_loop)[1]*dim(X_loop)[2]), 
+                                        nrow=dim(X_loop)[1], ncol=dim(X_loop)[2],
+                                        byrow = TRUE),
+                    D2 = componentes2$D2[1:dim(X_loop)[1]],
+                    saida = matrix(rep(0,dim(X_loop)[1]), ncol=1)
+                    )
+
+  Y_teste_hat[i] <- mean( previsao_drop(comp_loop)$saida )
+}
+
+plot(Y_teste - Y_teste_hat)
+```
+
+## 4. Weight scaling inference rule
+
+A ideia por trás da estratégia de dropout é mimetizar a estratégia de regularização *ensemble*, em que diferentes redes são treinadas, uma de cada vez, com um custo computacional menor.
+
+
+
+
+## 5. Rede da Lista 1 no Keras
+
+Nesta estapa a rede neural ajustada na Lista 1 e apresentada na introdução é implementada através do *Keras*
+
+
+```{r }
+Lista1 <- keras_model_sequential()
+
+Lista1 %>%
+          # Duas entradas (features) que geram duas saídas com função de ativação
+          # sigmoide
+          layer_dense(input_shape = 2,
+                       units = 2,
+                       use_bias = TRUE,
+                       activation = "sigmoid",
+                       kernel_initializer = 'zeros',
+                       bias_initializer = 'zeros' ) %>%
+          # Duas entradas e uma saída
+          layer_dense(units = 1,
+                       use_bias = TRUE,
+                       activation = "linear",
+                       kernel_initializer = 'zeros',
+                       bias_initializer = 'zeros' )
+
+summary(Lista1)
+
+Lista1 %>% compile(loss = "mse",
+                   optimizer = optimizer_sgd(learning_rate = 0.1))
+
+Lista1 %>% fit(x = X_trein,
+               y = Y_trein,
+               epochs=100,
+               batch_size = dim(X_trein)[1], # full gradient descend
+               callbacks = callback_early_stopping(monitor = "loss",
+                                                   patience = 200,
+                                                   restore_best_weights = TRUE),
+               verbose = 0) 
+
+get_weights(Lista1)
+```
+
+
+
+![Função de perda](E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/imagens/Lista1_keras.png)
+
+
+Uma vez que a rede foi implementada no Keras vamos comparar o **tempo computacional** e o **custo** das duas implementações **no conjunto de teste**.
+
+Quanto ao tempo de computação, o algoritmo de de gradiente descendente da lista 1 levou 
+
+
+```{r comparativo}
+library(tictoc)
+
+######################################################
+## Implementação da Lista 1
+######################################################
+X <- X_teste
+Y <- Y_teste
+theta_0 <- c(0, 0, 0, 0, 0, 0, 0, 0, 0)
+n <- 100 # Número de iterações
+tx_aprendisagem <- 0.1
+
+componentes4 <- list(entrada = X, 
+                    observado = Y,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                       nrow=dim(X)[1], ncol=dim(X)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                        nrow=dim(X)[1], ncol=dim(X)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y)[1]), ncol=1)
+                    )
+
+##############################################
+## Log do custo ao longo das iterações
+##############################################
+custo_evol_teste <- data.frame(
+  iteracao = 1:n,
+  cost = rep(0,n)
+)
+# Armazena os parâmetros de cada iteração
+thetas <- data.frame()
+
+tic("Lista1")
+##############################################
+## Gradiente descendente
+##############################################
+for (i in seq_len(n)){
+    # Estimativa
+    componentes4 <- previsao(componentes4)
+    # Cálculo do custo
+    custo_evol_teste$cost[i] <- custo(componentes4)
+    # Atualização dos parâmetros
+    thetas <- rbind(thetas, theta_0)
+    theta_0 <- theta_0 - (tx_aprendisagem * gradiente(componentes4))  
+    componentes4$pesos_c1 <- matrix(theta_0[1:4], nrow = 2, byrow = TRUE)
+    componentes4$vies_c1 <- matrix(theta_0[7:8], ncol = 2, nrow = dim(X_teste)[1], byrow=TRUE)
+    componentes4$pesos_cs <- matrix(theta_0[5:6], nrow = 2, byrow = TRUE)
+    componentes4$vies_cs <- matrix(theta_0[9], ncol = 1, nrow = dim(Y_teste)[1], byrow = TRUE)
+  }
+toc()
+
+tic("Keras")
+Lista1 %>% fit(x = X_trein,
+                   y = Y_trein,
+                   epochs=100,
+                   batch_size = dim(X_trein)[1], # full gradient descend
+                   callbacks = callback_early_stopping(monitor = "loss",
+                                                       patience = 200,
+                                                       restore_best_weights = TRUE),
+                   verbose = 0)
+toc()
+```
+
+Quanto ao custo temos que:
+
+```{r }
+
+custo_evol_testek <- data.frame(
+  iteracao = 1:n,
+  cost = rep(0,n)
+)
+
+custo_evol_testek$cost <- fit(Lista1, x = X_trein,
+                   y = Y_trein,
+                   epochs=100,
+                   batch_size = dim(X_trein)[1], # full gradient descend
+                   callbacks = callback_early_stopping(monitor = "loss",
+                                                       patience = 200,
+                                                       restore_best_weights = TRUE),
+                   verbose = 0)$metrics$loss
+
+
+cbind(c("Lista1","Keras"), rbind(
+custo_evol_teste[which.min(custo_evol_teste$cost),],
+custo_evol_testek[which.min(custo_evol_testek$cost),]))
+```
+
+## 6. Identificar a rede com melhor ajuste
+
+Nessa etapa se busca ajustar a rede com melhor ajuste tendo liberdade para alterar a arquitetura que foi definida na Lista 1.
+
+Foram testadas várias arquiteturas com menos e mais camadas, mas a rede implementada abaixo é a que conseguiu o menor MSE. 
+
+```{r }
+rm(Lista2)
+set.seed(92021)
+
+Lista2 <- keras_model_sequential()
+
+Lista2 %>%
+          layer_dense(input_shape = 2,
+                       units = 6,
+                       use_bias = TRUE,
+                       activation = "tanh",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal' ) %>%
+          layer_dense(units = 4,
+                       use_bias = TRUE,
+                       activation = "relu",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal' ) %>%
+          layer_dense(units = 5,
+                       use_bias = TRUE,
+                       activation = "sigmoid",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal' ) %>%
+          layer_dense(units = 3,
+                       use_bias = TRUE,
+                       activation = "softsign",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal' ) %>%
+          layer_dense(units = 1,
+                       use_bias = TRUE,
+                       activation = "linear",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal')
+
+summary(Lista2)
+
+Lista2 %>% compile(loss = "mse",
+                   optimizer = optimizer_sgd(learning_rate = 0.1))
+
+Lista2 %>% fit(x = X_trein,
+               y = Y_trein,
+               epochs=200,
+               validation_data = list(X_teste, Y_teste),
+               batch_size = dim(X_trein)[1], # full gradient descend
+               callbacks = callback_early_stopping(monitor = "loss",
+                                                   patience = 50,
+                                                   restore_best_weights = TRUE),
+               verbose = 0) 
+
+comp_keras <- fit(Lista2, x = X_trein,
+                   y = Y_trein,
+                   epochs=100,
+                   batch_size = dim(X_trein)[1], # full gradient descend
+                   callbacks = callback_early_stopping(monitor = "loss",
+                                                       patience = 200,
+                                                       restore_best_weights = TRUE),
+                   verbose = 0)
+
+min(comp_keras$metrics$loss)
+```
+
+![Função de perda](E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/imagens/Ajustada.png)
+
+## 7. Gráfico do valor previsto x valor observado (Conjunto de Teste)
+
+Esta seção faz a representação gráfica dos valores previstos com a "melhor rede" ajustada no Keras (`Lista2`) e os valores efetivamente observados no conjunto de teste.
+
+Nota-se que o gráfico é muito menos "poluído" que o obtido no item h da Lista 1 devido ao melhor ajuste da previsão.
+
+```{r }
+
+estimado <- predict(Lista2, X_teste, verbose = 0)
+
+grafico <- as_tibble(Y_teste) %>%
+                rename_all(~ c("observado")) %>%
+                mutate(estimado = estimado)
+
+ggplot(data = grafico, aes(x=observado, y=estimado)) +
+  geom_point()
+```
+
+
+## 8. Previsão para X = [1,1]
+
+Nesta seção usamos a função de previsão do Keras para obter $\hat{y}$ quando os valores de entrada são $X=[1,1]$.
+
+```{r }
+predict(Lista2, matrix(c(1,1), ncol=2), verbose = 0)
+```
+
+## 9. Superfície real e estimada
+
+```{r }
+par(mfrow=c(2,1))
+
+n <- 100
+x1 <- seq(-3, 3, length.out=n)
+x2 <- seq(-3, 3, length.out=n)
+dados.grid <- as_tibble(expand.grid(x1, x2)) %>%
+rename_all(~ c("x1", "x2")) %>%
+mutate(mu=abs(x1^3 - 30*sin(x2) + 10))
+ggplot(dados.grid, aes(x=x1, y=x2)) +
+geom_point(aes(colour=mu), size=2, shape=15) +
+  coord_cartesian(expand=F) +
+  scale_colour_gradient(low="white",
+  high="black",
+  name=TeX("E(Y|X_1, X_2)")) +
+  xlab(TeX("X_1")) + ylab(TeX("X_2"))
+
+
+dados.grid <- as_tibble(expand.grid(x1, x2)) %>%
+rename_all(~ c("x1", "x2")) %>%
+mutate(mu=predict(Lista2, as.matrix(cbind(x1,x2)), verbose = 0))
+ggplot(dados.grid, aes(x=x1, y=x2)) +
+geom_point(aes(colour=mu), size=2, shape=15) +
+  coord_cartesian(expand=F) +
+  scale_colour_gradient(low="white",
+  high="black",
+  name=TeX("E(Y|X_1, X_2)")) +
+  xlab(TeX("X_1")) + ylab(TeX("X_2"))
+```
+
+## 10. Rede ajustada sobre os valores previstos
+
+Nessa seção é feita a previsão para todas as observações utilizando a rede neural ajustada no Keras.
+
+```{r }
+# Previsão para todas as observações
+Y_hat <- predict(Lista2, as.matrix(dados[,1:2], ncol=2), verbose = 0)
+```
+
+
+Em seguida é ajustada uma nova rede que busca modelar esses valores previstos.
+
+Uma possível utilidade desse exercício seria simplificar a rede ajustada originalmente (`Lista2`). Se a rede original é uma boa aproximação aos valores observados e se essa segunda rede (mais simples) é uma boa aproximação a primeira então ela poderia ser utilizada no lugar daquela.
+
+
+```{r }
+rm(rede)
+set.seed(92021)
+
+rede <- keras_model_sequential()
+
+rede %>%
+          layer_dense(input_shape = 2,
+                       units = 4,
+                       use_bias = TRUE,
+                       activation = "tanh",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal' ) %>%
+          layer_dense(units = 2,
+                       use_bias = TRUE,
+                       activation = "relu",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal' ) %>%
+          layer_dense(units = 2,
+                       use_bias = TRUE,
+                       activation = "sigmoid",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal' ) %>%
+          layer_dense(units = 1,
+                       use_bias = TRUE,
+                       activation = "linear",
+                       kernel_initializer = 'random_normal',
+                       bias_initializer = 'random_normal')
+
+summary(rede)
+
+rede %>% compile(loss = "mse",
+                   optimizer = optimizer_sgd(learning_rate = 0.1))
+
+rede %>% fit(x = as.matrix(dados[,1:2], ncol=2),
+               y = Y_hat,
+               epochs=200,
+               batch_size = dim(Y_hat)[1], # full gradient descend
+               callbacks = callback_early_stopping(monitor = "loss",
+                                                   patience = 50,
+                                                   restore_best_weights = TRUE),
+               verbose = 0) 
+```
+
+
+![Função de perda](E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/imagens/Ajustada2.png)
+
+
+## 11. Recursos consultados
+
+DAHAL, P. Dropout Layer - The unconventional regularization technique. Disponível em: <http://deepnotes.io/dropout>. Acesso em: 22/9/2021.
+
+GOODFELLOW, I.; BENGIO, Y.; COURVILLE, A. Deep learning. Cambridge, Massachusetts: The MIT Press, 2016.
+
+KRISTIADI, A. Implementing Dropout in Neural Net. Agustinus Kristiadi’s Blog. Disponível em: <http://wiseodd.github.io/techblog/2016/06/25/dropout/>. Acesso em: 22/9/2021.
+
+LEWIS, N. D. C. Deep learning made easy with R: a gentle introduction for data science. Place of publication not identified: AusCov, 2016.

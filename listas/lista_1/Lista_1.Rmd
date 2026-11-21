@@ -1,0 +1,865 @@
+---
+title: "Lista 1 - Ajustando uma RNA 'no braço'"
+author: "Matheus Stivali"
+date: "28/07/2021"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+
+# Introdução
+
+Este trabalho tem o objetivo de implementar passo a passo uma rede neural na linguagem R, sem recorrer a pacotes ou rotinas específicas pré-progamadas para os cálculos e estimativas.
+
+O processo gerador de dados "real", que os diferentes passos buscam identificar é dado pelo processo:
+
+$$
+Y \sim N(\mu,\sigma = 1) \\
+\mu = |X_{1}^{3} - 30 \times sen(X_{2}) + 10| \\
+X_{j} \sim \text{Uniforme(-3,3);  j=1,2.}
+$$
+Que é gerado pelo código abaixo e armazenado no objetos `dados`.
+
+```{r setup, include=FALSE}
+### carregando pacotes
+library(dplyr)
+library(ggplot2)
+library(latex2exp)
+library(NeuralNetTools)
+library(purrr)
+```
+
+```{r }
+### Gerando dados "observados"
+set.seed(2.2020)
+m.obs <- 100000
+dados <- tibble(x1.obs=runif(m.obs, -3, 3),
+                x2.obs=runif(m.obs, -3, 3)) %>%
+  mutate(mu=abs(x1.obs^3 - 30*sin(x2.obs) + 10),
+         y=rnorm(m.obs, mean=mu, sd=1))
+```
+
+
+Busca-se construir uma rede neural com um camada escondida contendo dois neurônios, podendo ser descrita por:
+
+$$
+\text{Camada escondida:} \\
+h_1 = \phi(x_1w_1+x_2w_3 + b_1) = \phi(a_1) \\
+h_2 = \phi(x_1w_2+x_2w_4 + b_2) = \phi(a_2) \\
+\text{Camada de saída:} \\
+\hat{y} = h_1w_5+h_2w_6 + b_3
+$$
+Ou então, matricialmente (os subscritos indicam as dimensões das matrizes):
+
+
+$$
+\underbrace{
+y_{1,n} = 
+\begin{bmatrix}
+y_{1} \\
+y_{2} \\
+\ldots
+\end{bmatrix}}_{\text{Dados observados}}
+;\hspace{5pt}
+\underbrace{
+X_{2,n} = 
+\begin{bmatrix}
+x_{1,1} & x_{1,2} \\
+x_{2,1} & x_{2,2} \\
+\ldots & \ldots
+\end{bmatrix}}_{\text{Matrix Design}}
+;\hspace{5pt}
+\underbrace{
+\theta_{1,9}^T = (w_1, w_2, w_3, w_4, w_5, w_6, b_1, b_2, b_3)
+}_{\text{Vetor de pesos}} \\
+\underbrace{
+W^{(1)}_{2,2} = 
+\begin{bmatrix}
+w_{1} & w_{2} \\
+w_{3} & w_{4}
+\end{bmatrix}}_{\text{Pesos da 1ª camada}}
+;\hspace{5pt}
+\underbrace{
+b^{(1)}_{2,1} = 
+\begin{bmatrix}
+b_{1} \\
+b_{2}
+\end{bmatrix}}_{\text{Vieses da 1ª camada}} 
+;\hspace{5pt}
+\underbrace{
+W^{(2)}_{1,2} = 
+\begin{bmatrix}
+w_{5} \\
+w_{6} 
+\end{bmatrix}}_{\text{Pesos da 2ª camada}}
+;\hspace{5pt}
+\underbrace{
+b^{(2)}_{1,1} = 
+b_{3}}_{\text{Viés da 2ª camada}}
+;\hspace{5pt}
+\underbrace{
+\phi(x) = \dfrac{1}{1+e^{-x}} 
+}_{\text{Função de ativação}}\\
+h_{2,1} = \phi ( XW^{(1)}+ [b^{(1) T}] ) = \phi(a_{2,1}) = 
+\underbrace{
+\begin{bmatrix}
+h_{1,1} & h_{1,2} \\
+h_{2,1} & h_{2,2} \\
+\ldots & \ldots
+\end{bmatrix}_{n,2}}_{\text{Resultado da 1ª camada}} \\
+\hat{y}_{n,1} = h W^{(2)} + [b_{3}]_{n,1} = 
+\underbrace{
+\begin{bmatrix}
+\hat{y}_{1} \\
+\hat{y}_{2} \\
+\ldots
+\end{bmatrix}_{n,1}}_{\text{Saída}} \\
+$$
+
+Isto é, os dados de input da *matriz design* ($x_{i,1}$ e $x_{i,2}$) são transformados na primeira camada pela aplicação em sequência de uma transormação linear ($W^{(1)}$) e de uma transformação não linear $\phi(.)$. Onde $\phi(.)$ é a função de ativação logística: $\phi(x) = \dfrac{1}{1+e^{-x}}$
+Finalmente, os resultados da camada escondida são levados a camada de saída por uma outra transformação linear ($W^{(2)}$). Cada transformação linear é acompanhada da soma dos viéses ($b^{(1)}$ e $b^{(2)}$, respectivamente).
+
+
+## 1. Função de previsão: $\hat{y} = f(x,\theta)$ 
+
+O primeiro passo é implementar uma função que forneça uma estimativa $\hat{y}$ em função de x e $\theta$ com as transformações lineares e não lineares descritas acima. E então utilizar essa função para $\hat{y}$ considerados o vetor de pesos $\theta_{1,9}^T = (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)$ e uma matriz design com apenas uma linha $X = [1, 1]$.
+
+Inicia-se definindo os diferentes componentes da rede neural no R:
+
+```{r }
+##########################################################################
+###  Componentes da rede
+##########################################################################
+theta_0 <- rep(0.1,9)
+W1 <- matrix(theta_0[1:4], nrow=2, byrow=TRUE)
+W2 <- matrix(theta_0[5:6], nrow=2, byrow=TRUE)
+b1 <- matrix(theta_0[7:8], nrow=2, byrow=TRUE)
+b3 <- theta_0[9]
+X <- matrix( c(1,1), ncol=2)
+# Phi - função de ativação logística
+fih <- function(x) {
+  1 / (1 + exp(-x))
+  }
+```
+
+Antes de se automatizar o processo em uma função pode-se implementar as transformações previstas na rede uma a uma:
+
+```{r }
+##########################################################################
+## Passo a passo, sem automatizar na função
+##########################################################################
+passo1 = X %*% W1
+passo2 = passo1 + t(b1)
+passo3 = fih(passo2)
+passo4 = passo3 %*% W2
+saida = passo4 + b3
+  saida
+```
+```{r include = FALSE, echo=FALSE}
+rm(passo1,passo2,passo3,passo4,saida)
+```
+
+Por fim define-se a função de forma que ela funcione com uma matrix desing sem número de observações pré-definido
+
+```{r }
+##########################################################################
+## Definindo os valores:
+##########################################################################
+X <- t(as.matrix(c(1,1)))
+Y <- as.matrix(c(1)) # Aqui apenas auxiliar
+theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+
+##########################################################################
+## Agrupando os componentes em uma lista
+##########################################################################
+componentes1 <- list(entrada = X, 
+                    observado = Y,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                       nrow=dim(X)[1], ncol=dim(X)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                        nrow=dim(X)[1], ncol=dim(X)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y)[1]), ncol=1)
+                    )
+
+##########################################################################
+## Função de previsão
+##########################################################################
+previsao <- function(rn) {
+  rn$camada_tl <- (rn$entrada %*% rn$pesos_c1) + rn$vies_c1
+  rn$camada_tnl <- fih(rn$camada_tl)
+  rn$saida <- (rn$camada_tnl %*% rn$pesos_cs) + rn$vies_cs
+  return(rn)
+  }
+
+previsao(componentes1)$saida
+```
+
+## 2. Função de custo
+
+A função custo que se vai adotar para a rede é:
+
+$$
+J(\theta) = \dfrac{1}{m} \sum^{m}_{i=1}L(f(x_{1,i},x_{2,i}),y_i) = \dfrac{\sum^{m}_{i=1}(y_i - \hat{y}_i)^2}{m}
+$$
+
+```{r }
+##########################################################################
+## Função de custo
+##########################################################################
+custo <- function(rn){
+  mean((rn$observado - rn$saida)^2)
+}
+```
+
+
+Considerando o **conjunto de treinamento** (as primeiras 80000 observações dos dados) o custo da rede é de `670.3107`.
+
+```{r }
+##########################################################################
+## Divisão do conjunto de dados
+##########################################################################
+X_trein <- as.matrix(dados[1:80000,1:2])
+X_teste <- as.matrix(dados[80001:100000,1:2])
+Y_trein <- as.matrix(dados[1:80000,4])
+Y_teste <- as.matrix(dados[80001:100000,4])
+
+##########################################################################
+## Cálculo do custo
+##########################################################################
+theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+componentes2 <- list(entrada = X_trein, 
+                    observado = Y_trein,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X_trein)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y_trein)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X_trein)[1]*dim(X_trein)[2]), 
+                                       nrow=dim(X_trein)[1], ncol=dim(X_trein)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X_trein)[1]*dim(X_trein)[2]), 
+                                        nrow=dim(X_trein)[1], ncol=dim(X_trein)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y_trein)[1]), ncol=1)
+                    )
+
+conj_trein_hat <- previsao(componentes2)
+custo(conj_trein_hat)
+
+```
+
+Considerando o **conjunto de teste** (as últimas 20000 observações dos dados) o custo da rede é de `665.0861`.
+
+```{r }
+##########################################################################
+## Cálculo do custo
+##########################################################################
+theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+componentes3 <- list(entrada = X_teste, 
+                    observado = Y_teste,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X_teste)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(X_teste)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X_teste)[1]*dim(X_teste)[2]), 
+                                       nrow=dim(X_teste)[1], ncol=dim(X_teste)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X_teste)[1]*dim(X_teste)[2]), 
+                                        nrow=dim(X_teste)[1], ncol=dim(X_teste)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y_teste)[1]), ncol=1)
+                    )
+
+conj_test_hat <- previsao(componentes3)
+custo(conj_test_hat)
+
+```
+
+
+## 3. Vetor gradiente da função de custo
+
+Nesse passo vamos obter as expressões algébricas do vetor gradiente $\nabla_\theta(J)$ da função custo em relação aos parâmetros contidos em $\theta$.
+
+
+### 3.1. Derivada da função de custo
+
+
+$$
+J(\theta) = \dfrac{1}{m} \sum^{m}_{i=1}L(f(x_{1,i},x_{2,i}),y_i) = \dfrac{\sum^{m}_{i=1}(y_i - \hat{y}_i)^2}{m} \\
+\dfrac{\partial J(\theta)}{\partial \theta_j} = 
+    \dfrac{1}{m} \times 2 \times \sum^{m}_{i=1} (y_i - \hat{y}_i) \times \bigg( -\dfrac{\partial  \hat{y}}{\partial \theta_j} \bigg) 
+$$
+
+### 3.2. Derivadas da função de previsão
+
+
+
+$$
+f(x_{i,1},x_{i,2};\theta) = \hat{y}_i= \phi(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \times w_{5}
+                                     + \phi(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \times w_{6}
+                                     + b_{3}\\
+1) \dfrac{\partial \hat{y}}{\partial w_{1}} = 
+      x_{i,1} w_{5} \times \phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \\
+2) \dfrac{\partial \hat{y}}{\partial w_{3}} = 
+      x_{i,2} w_{5} \times \phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \\
+3) \dfrac{\partial \hat{y}}{\partial w_{2}} = 
+      x_{i,1} w_{6} \times \phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \\
+4) \dfrac{\partial \hat{y}}{\partial w_{4}} = 
+      x_{i,2} w_{6} \times \phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \\
+5) \dfrac{\partial \hat{y}}{\partial w_{5}} = 
+      \phi(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \\
+6) \dfrac{\partial \hat{y}}{\partial w_{6}} = 
+      \phi(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \\
+7) \dfrac{\partial \hat{y}}{\partial b_{1}} = 
+      w_{5} \times \phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \\
+8) \dfrac{\partial \hat{y}}{\partial b_{2}} = 
+      w_{6} \times \phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \\
+9) \dfrac{\partial \hat{y}}{\partial b_{3}} = 1
+$$
+
+### 3.3. Derivada da função de ativação
+
+$$
+\phi(x) = \dfrac{1}{1+e^{-x}} \\
+\frac{d\phi(x)}{dx} = -1 (1+e^{-x})^{-2}(0-e^{-x})=\dfrac{e^{-x}}{(1+e^{-x})^2}=\dfrac{1}{1+e^{-x}} \times \dfrac{e^{-x}}{1+e^{-x}} \\
+\frac{d\phi(x)}{dx} = \dfrac{1}{1+e^{-x}} \times \dfrac{e^{-x}}{1+e^{-x}} = \phi(x) \times (1-\phi(x))
+$$
+
+No R essa derivada pode ser definida como uma função:
+
+```{r }
+#############################################
+# Phi_linha - derivada da função logística
+#############################################
+fih_linha <- function(x) {
+ ( 1 / (1 + exp(-x)) ) * ( 1 - (1 / (1 + exp(-x))) )
+ }
+```
+
+### 3.4. Vetor gradiente
+
+Nessa subseção os elementos das três últimas subseções são reunidos para compor o vetor gradiente:
+
+
+
+$$
+\nabla_{\theta}J(\theta) = 
+\begin{pmatrix}
+\dfrac{\partial J(\theta)}{\partial w_1}\\
+\dfrac{\partial J(\theta)}{\partial w_2}\\
+\dfrac{\partial J(\theta)}{\partial w_3}\\
+\dfrac{\partial J(\theta)}{\partial w_4}\\
+\dfrac{\partial J(\theta)}{\partial w_5}\\
+\dfrac{\partial J(\theta)}{\partial w_6}\\
+\dfrac{\partial J(\theta)}{\partial b_1}\\
+\dfrac{\partial J(\theta)}{\partial b_2}\\
+\dfrac{\partial J(\theta)}{\partial b_3}
+\end{pmatrix}
+=
+\begin{pmatrix}
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+	x_{1} w_{5} \times 
+			\phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+		x_{1} w_{6} \times
+			\phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+	  x_{2} w_{5} \times
+			\phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+		x_{2} w_{6} \times
+			\phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+		\phi(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1})
+	\bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+		\phi(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2})
+	\bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+		w_{5} \times 
+			\phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times \bigg( - 
+		w_{6} \times
+			\phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \bigg) \\
+\dfrac{2}{m} \times \sum^{m}_{i=1}(y_i - \hat{y}_i) \times (-1) \\
+\end{pmatrix}
+$$
+
+
+## 4. Computação do vetor gradiente - Backpropagation
+
+
+Nesse passo é desenvolvida uma função que toma como argumentos a matriz design (X), a matriz dos rótulos (Y), e o vetor de parâmetros ($\theta$)e fornece como saída o vetor gradiente.
+
+```{r }
+#############################################
+# Função gradiente com backpropagation
+#############################################
+gradiente <- function(rn){
+  gradi <- rep(0,9)
+  ### Elementos que se repetem nas derivadas - calcular só 1 vez
+  w5fih_linha <- rn$pesos_cs[1] * fih_linha(rn$camada_tl[,1])
+  w6fih_linha <- rn$pesos_cs[2] * fih_linha(rn$camada_tl[,2]) 
+  ###
+  gradi[1] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * 
+                rn$entrada[,1] * w5fih_linha)
+  gradi[2] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * 
+                rn$entrada[,1] * w6fih_linha)
+  gradi[3] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * 
+                rn$entrada[,2] * w5fih_linha)
+  gradi[4] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * 
+                rn$entrada[,2] * w6fih_linha)
+  gradi[5] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * 
+                fih(rn$camada_tl[,1]))
+  gradi[6] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * 
+                fih(rn$camada_tl[,2]))      
+  gradi[7] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * w5fih_linha)
+  gradi[8] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1) * w6fih_linha)
+  gradi[9] <- (2 / dim(rn$observado)[1]) * 
+                sum( (rn$observado - rn$saida) * (-1))
+  return(gradi)
+}
+```
+
+
+Agora essa função é aplicada ao conjunto de treinamento (as primeiras 80000 observações dos dados) com o vetor de parâmetros $\theta_{1,9}^T = (0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)$.
+
+
+```{r }
+#############################################
+# Argumentos da função
+#############################################
+theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+componentes4 <- list(entrada = X_trein, 
+                    observado = Y_trein,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X_trein)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y_trein)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X_trein)[1]*dim(X_trein)[2]), 
+                                       nrow=dim(X_trein)[1], ncol=dim(X_trein)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X_trein)[1]*dim(X_trein)[2]), 
+                                        nrow=dim(X_trein)[1], ncol=dim(X_trein)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y_trein)[1]), ncol=1)
+                    )
+
+# Gerando a previsão
+componentes4 <- previsao(componentes4)
+
+gradiente(componentes4)
+```
+
+## 5. Minimização da função custo pelo método do gradiente
+
+Considerando a rede,a função custo e a função gradiente definidas anteriormente, nesta seção serão procurados os parâmetros ($\theta$) que minimizam a função custo. A minimização da função custo será realizada pelo método do gradiente.
+O gradiente de uma função representa o vetor que indica a direção para qual aquela superfície cresce naquele ponto. Dada a função custo adotada, a busca pelo mínimo tem que ocorrer na direção oposta do gradiente.
+
+Assim, o procedimento nessa seção será:
+
+1. Inicializar a rede com parâmetros pré-definidos
+  i. Definir a lista `componentes` e usar a função `previsao`
+2. Calcular o `custo` da rede com aqueles parâmetros e armazenar
+3. Calcular o gradiente da função custo (`gradiente`) e atualizar os parâmetros utilizando a taxa de aprendizagem $\epsilon$=`0.1`.
+
+$$
+\theta_{novo} = \theta_{antigo} - \nabla_{\theta}J(\theta_{antigo}) \times \epsilon
+$$
+4. Substituir os novos valores na lista `componentes`.
+
+
+### 5.1 Minimização no conjunto de treinamento
+
+
+
+```{r }
+#######################################################
+## Parâmetros de inicialização
+#######################################################
+n <- 100 # Número de iterações
+tx_aprendisagem <- 0.1
+
+theta_0 <- c(0, 0, 0, 0, 0, 0, 0, 0, 0)
+componentes_aj <- list(entrada = X_trein, 
+                    observado = Y_trein,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X_trein)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y_trein)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X_trein)[1]*dim(X_trein)[2]), 
+                                       nrow=dim(X_trein)[1], ncol=dim(X_trein)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X_trein)[1]*dim(X_trein)[2]), 
+                                        nrow=dim(X_trein)[1], ncol=dim(X_trein)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y_trein)[1]), ncol=1)
+                    )
+
+
+##############################################
+## Log do custo ao longo das iterações
+##############################################
+custo_evol <- data.frame(
+  iteracao = 1:n,
+  cost = rep(0,n)
+)
+
+# Armazena os parâmetros de cada iteração
+thetas <- data.frame()
+
+#######################################################
+## Minimização do erro
+#######################################################
+for (i in seq_len(n)){
+  # Estimativa
+  componentes_aj <- previsao(componentes_aj)
+  # Cálculo do custo
+  custo_evol$cost[i] <- custo(componentes_aj)
+  # Atualização dos parâmetros
+  thetas <- rbind(thetas, theta_0)
+  theta_0 <- theta_0 - (tx_aprendisagem * gradiente(componentes_aj))  
+  componentes_aj$pesos_c1 <- matrix(theta_0[1:4], nrow = 2, byrow = TRUE)
+  componentes_aj$vies_c1 <- matrix(theta_0[7:8], ncol = 2, nrow = dim(X_trein)[1], byrow=TRUE)
+  componentes_aj$pesos_cs <- matrix(theta_0[5:6], nrow = 2, byrow = TRUE)
+  componentes_aj$vies_cs <- matrix(theta_0[9], ncol = 1, nrow = dim(Y_trein)[1], byrow = TRUE)
+  }
+```
+
+O custo mínimo foi obtido na iteração 19: 
+
+```{r }
+custo_evol[which.min(custo_evol$cost),]
+```
+
+O vetor de parâmetros obtidos na iteração 19 é:
+
+```{r }
+thetas[19,]
+```
+
+### 5.2 Minimização no conjunto de teste
+
+```{r }
+#######################################################
+## Parâmetros de inicialização
+#######################################################
+n <- 100 # Número de iterações
+tx_aprendisagem <- 0.1
+
+theta_0 <- c(0, 0, 0, 0, 0, 0, 0, 0, 0)
+componentest_aj <- list(entrada = X_teste, 
+                    observado = Y_teste,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X_teste)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(X_teste)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X_teste)[1]*dim(X_teste)[2]), 
+                                       nrow=dim(X_teste)[1], ncol=dim(X_teste)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X_teste)[1]*dim(X_teste)[2]), 
+                                        nrow=dim(X_teste)[1], ncol=dim(X_teste)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y_teste)[1]), ncol=1)
+                    )
+
+
+##############################################
+## Log do custo ao longo das iterações
+##############################################
+custo_evolt <- data.frame(
+  iteracao = 1:n,
+  cost = rep(0,n)
+)
+
+# Armazena os parâmetros de cada iteração
+thetast <- data.frame()
+
+#######################################################
+## Minimização do erro
+#######################################################
+for (i in seq_len(n)){
+  # Estimativa
+  componentest_aj <- previsao(componentest_aj)
+  # Cálculo do custo
+  custo_evolt$cost[i] <- custo(componentest_aj)
+  # Atualização dos parâmetros
+  thetast <- rbind(thetast, theta_0)
+  theta_0 <- theta_0 - (tx_aprendisagem * gradiente(componentest_aj))  
+  componentest_aj$pesos_c1 <- matrix(theta_0[1:4], nrow = 2, byrow = TRUE)
+  componentest_aj$vies_c1 <- matrix(theta_0[7:8], ncol = 2, nrow = dim(X_teste)[1], byrow=TRUE)
+  componentest_aj$pesos_cs <- matrix(theta_0[5:6], nrow = 2, byrow = TRUE)
+  componentest_aj$vies_cs <- matrix(theta_0[9], ncol = 1, nrow = dim(Y_teste)[1], byrow = TRUE)
+  }
+```
+
+O custo mínimo foi obtido na iteração 19: 
+```{r }
+custo_evolt[which.min(custo_evolt$cost),]
+```
+
+O vetor de parâmetros final é
+
+```{r }
+thetast[19,]
+```
+
+
+
+## 6. Otimização no conjunto de treinamento e de teste
+
+Nesse passo são comparadas as minimizações da função custo no conjunto de treinamento e no conjunto de teste.
+
+```{r }
+ggplot(data = custo_evol, aes(x = iteracao, y = cost)) +
+  geom_line(colour="red") + 
+  geom_point(data = custo_evolt, colour="green") +
+  ggtitle("Minimização do custo nos conjuntos de treinamento e de teste") +
+  xlab("Iteração") + ylab("Custo")
+```
+
+No gráfico acima a minimização do custo no conjunto de treinamento é mostrada na linha contínua em vermelho e no conjunto de teste nos pontos verdes.
+Em ambos o caso a minimização é bastente similar o que é natural dado que os dados tem o mesmo processo gerador. Após uma grande redução no custo após as cinco primeira iterações, as iterações seguintes fazem o custo variar entre valores muito próximos.
+
+
+## 7. Gráfico de resíduos contra features
+
+Nessa etapa será construída uma representação gráfica dos resíduos obtidos na última iteração do conjunto de treinamento contras as features da rede neural.
+
+```{r }
+dados.grid <- as_tibble(componentes_aj$entrada) %>%
+    rename_all(~ c("x1", "x2")) %>%
+    mutate(res=componentes_aj$observado - componentes_aj$saida)
+
+
+ggplot(dados.grid, aes(x=x1, y=x2)) +
+  geom_point(aes(colour=dados.grid$res), size=2, shape=15) +
+  coord_cartesian(expand=F) +
+  scale_colour_gradient(low="white",
+  high="black",
+  name=TeX("E(Y|X_1, X_2)")) +
+  xlab(TeX("X_1")) + ylab(TeX("X_2"))
+```
+
+
+Pelo gráfico pode-se notar que o modelo da rede neural **erra mais**, isto é, gera resíduos maiores em algumas regiões específicas. Notadamente ao redor dos pontos $(x_1,x_2) = (-3,3/2)$ e $(x_1,x_2) = (3,-3/2)$.
+
+
+## 8. Gráfico do valor previsto x valor observado (Treinamento e Teste)
+
+```{r }
+grafico <- as_tibble(componentes_aj$observado) %>%
+                rename_all(~ c("observado")) %>%
+                mutate(estimado = componentes_aj$saida)
+
+ggplot(data = grafico, aes(x=observado, y=estimado)) +
+  geom_point()
+```
+
+
+## 9. Evolução do valor do gradiente k=1 a k=300
+
+
+```{r }
+#######################################################
+## Parâmetros de inicialização
+#######################################################
+n <- 300 # Tamanho máximo
+
+##############################################
+## Log do primeiro elemento do gradiente
+##############################################
+grad_evol <- data.frame(
+  iteracao = 1:n,
+  dJ_dw1 = rep(0,n)
+)
+
+for (i in seq_len(n)){
+  X <- as.matrix(dados[1:i,1:2])
+  Y <- as.matrix(dados[1:i,4])
+  theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+  componentes5 <- list(entrada = X, 
+                    observado = Y,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                       nrow=dim(X)[1], ncol=dim(X)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                        nrow=dim(X)[1], ncol=dim(X)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y)[1]), ncol=1)
+                    )
+  grad_evol$dJ_dw1[i] <- gradiente(componentes5)[1]
+  }
+```
+
+```{r }
+ggplot(data = grad_evol, aes(x = iteracao, y = dJ_dw1)) +
+  geom_line(colour="blue") + 
+  geom_hline(yintercept=-0.1802081, color="red") +
+  ggtitle("Evolução do primeiro componente do gradiente segundo o tamanho da amostra") +
+  xlab("Tamanho da amostra") + ylab(TeX("$dJ/dw_1$"))
+```
+```{r }
+library(microbenchmark)
+
+teste <- function(k){
+  X <- as.matrix(dados[1:k,1:2])
+  Y <- as.matrix(dados[1:k,4])
+  theta_0 <- c(0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1)
+  componentes6 <- list(entrada = X, 
+                    observado = Y,
+                    pesos_c1 = matrix(theta_0[1:4], nrow = 2, byrow = TRUE), 
+                    vies_c1 = matrix(theta_0[7:8], ncol = 2, nrow = dim(X)[1], byrow=TRUE),
+                    pesos_cs = matrix(theta_0[5:6], nrow = 2, byrow = TRUE), 
+                    vies_cs = matrix(theta_0[9], ncol = 1, nrow = dim(Y)[1], byrow = TRUE),
+                    camada_tl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                       nrow=dim(X)[1], ncol=dim(X)[2],
+                                       byrow = TRUE),
+                    camada_tnl = matrix(rep(0,dim(X)[1]*dim(X)[2]), 
+                                        nrow=dim(X)[1], ncol=dim(X)[2],
+                                        byrow = TRUE),
+                    saida = matrix(rep(0,dim(Y)[1]), ncol=1)
+                    )
+  gradiente(componentes6)
+}
+
+rbind(microbenchmark(teste(300)), microbenchmark(teste(100000)))
+```
+
+
+
+## 10. Modelo linear sobre o conjunto de treinamento
+
+
+Nessa etapa são ajustados dois modelos lineares sobre o conjunto de treinamento para fins de comparação com o resultado obtido com o ajuste da rede neural. O primeiro é um modelo simples apenas com $x_1$ e $x_2$ como variáveis explicativas e o segundo inclui essas variáveis ao quadrado e também um termo de interação entre elas.
+
+
+
+$$
+Y_i \sim N(\beta_0 + \beta_1 x_{1,i} + \beta_2 x_{2,i}, \sigma) \\
+E(Y_i|x_1,x_2) = \beta_0 + \beta_1 x_{1} + \beta_2 x_{2} + \epsilon \Rightarrow \text{Modelo linear 1}\\
+E(Y_i|x_1,x_2) = \beta_0 + \beta_1 x_{1} + \beta_2 x_{2} + \beta_3 x_{1}^2 + \beta_4 x_{2}^2 +\beta_5 x_{1} x_{2} + +\epsilon \Rightarrow \text{Modelo linear 2}
+$$
+
+
+
+```{r }
+  REG <- cbind(dados[1:80000,4], dados[1:80000,1:2])
+  ML1 <- lm(y ~ x1.obs + x2.obs, data=REG)
+  ML2 <- lm(y ~ x1.obs * x2.obs + I(x1.obs^2) + I(x2.obs^2), data=REG)
+  
+  mean(ML1$residuals^2)
+  mean(ML2$residuals^2)
+  # Recuperando o objeto 'componentes' do passo 5 para o conjunto de treinamento
+  mean((componentes_aj$observado - componentes_aj$saida)^2)
+```
+
+
+
+
+
+## 11. Efeito marginal de x1 no valor esperado em cada modelo.
+
+Nesta etapa são avaliados como uma variação marginal na variável explicativa $x_1$ impacta sobre o valor esperado nos diferentes modelos.
+
+
+$$
+\textbf{Efeito marginal na rede neural} \\
+f(x_{i,1},x_{i,2};\theta) = \hat{y}_i= \phi(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \times w_{5}
+                                     + \phi(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \times w_{6}
+                                     + b_{3}\\
+\dfrac{\partial f}{\partial x_1} = 
+  w_1 \times \phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) \times w_{5} + w_2 \times \phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2}) \times w_{6} \\
+\dfrac{\partial f}{\partial x_1} = 
+  \boxed{
+  w_1w_{5} \times \phi'(x_{i,1}w_{1}+x_{i,2}w_{3}+b_{1}) + w_2w6 \times \phi'(x_{i,1}w_{2}+x_{i,2}w_{4}+b_{2})
+  } \\
+\textbf{Efeito marginal na Modelo Linear 1} \\
+\hat{y} = \beta_0 + \beta_1 x_{1} + \beta_2 x_{2} + \epsilon\\
+\dfrac{\partial \hat{y}}{\partial x_1} = \boxed{\beta_1}\\
+\textbf{Efeito marginal na Modelo Linear 2} \\
+\hat{y} = \beta_0 + \beta_1 x_{1} + \beta_2 x_{2} + \beta_3 x_{1}^2 + \beta_4 x_{2}^2 +\beta_5 x_{1} x_{2} + \epsilon \\
+\dfrac{\partial \hat{y}}{\partial x_1} = \boxed{\beta_1 + 2\beta_3x_1 + \beta_5x_2}\\
+$$
+
+
+No caso de um incremento marginal de $x_1$ na **rede neural** temos que ele impacta o resultado por dois caminhos, isto é, pelos dois neurônios da camada escondida. Adicionalmente, esse impacto é não linear e depende do ponto em que esse incremento ocorre (isto é, do valor em que a derivada é avaliada). No caso do **modelo linear 1** o efeito é direto e linear, com o incremento de uma unidade de $x_1$ impactando $\beta_1$ no resultado esperado. No caso do **modelo linear 2** tem-se o efeito direto ($\beta_1$), mas também efeitos não-lineares que dependem do ponto de avaliação da derivada devido ao termo quadrático  ($2\beta_3x_1$) e ao termo de interação ($\beta_5x_2$).
+
+
+## 12. Intervalo de confiança de 95%.
+
+Nessa seção vai-se avalia quantas vezes o intervalo de confinaça de 95% continha o valor observado (y) nos três modelos. A princípio espera-se que isso ocorra ao menos 95% das vezes.
+
+
+Contudo, para a **rede neural** isso ocorre `0.937325` das vezes.
+
+```{r }
+sigma_rn <- sqrt(mean((componentes_aj$observado - componentes_aj$saida)^2))
+ic_rn <- tibble(estim = componentes_aj$saida, obser = componentes_aj$observado)
+ic_rn$ii <- componentes_aj$saida - 1.96 * sigma_rn
+ic_rn$is <- componentes_aj$saida + 1.96 * sigma_rn
+ic_rn$indi <- ifelse(ic_rn$ii < ic_rn$obser,
+                     ifelse(ic_rn$obser< ic_rn$is,1,0),0)
+mean(ic_rn$indi)
+```
+Para o **modelo linear 1** isso já ocorre `0.952825` das vezes.
+
+```{r }
+sigma_ml1 <- mean(ML1$residuals^2)
+ic_ml1 <- cbind(predict(ML1, interval = "prediction"),dados[1:80000,])
+ic_ml1$indi <- ifelse(ic_ml1$lwr < ic_ml1$y,
+                     ifelse(ic_ml1$y< ic_ml1$upr,1,0),0)
+mean(ic_ml1$indi)
+```
+
+E para o **modelo linear 2** isso ocorre `0.96695` das vezes.
+
+```{r }
+sigma_ml2 <- mean(ML2$residuals^2)
+ic_ml2 <- cbind(predict(ML2, interval = "prediction"),dados[1:80000,4])
+ic_ml2$indi <- ifelse(ic_ml2$lwr < ic_ml2$y,
+                     ifelse(ic_ml2$y< ic_ml2$upr,1,0),0)
+mean(ic_ml2$indi)
+```
+## 13. Analise adicional do Modelo Linear 1.
+
+```{r }
+library(viridis)
+ggplot(data = ic_ml1, aes(x=x1.obs, y=x2.obs, color=indi)) +
+  scale_colour_gradient(low = "red", high = "darkgreen") +
+  geom_point(alpha=0.5) 
+```
+As observações fora do IC 95% (regiões em **verde** no gráfico) correspondem aquelas em que o valor "real" é mais alto.
+
+
+
+## 14. Recursos consultados
+
+GOODFELLOW, I.; BENGIO, Y.; COURVILLE, A. Deep learning. Cambridge, Massachusetts: The MIT Press, 2016.
+
+TYCHOBRA, P. ON. How to build your own Neural Network from scratch in R | R-bloggers. , 9. out. 2018. Disponível em: <https://www.r-bloggers.com/2018/10/how-to-build-your-own-neural-network-from-scratch-in-r/>. Acesso em: 24/8/2021.
+
+VERMA, A. Building A Neural Net from Scratch Using R - Part 1. Disponível em: <https://rviews.rstudio.com/2020/07/20/shallow-neural-net-from-scratch-using-r-part-1/>. Acesso em: 24/8/2021a.
+
+VERMA, A. Building A Neural Net from Scratch Using R - Part 2. Disponível em: <https://rviews.rstudio.com/2020/07/24/building-a-neural-net-from-scratch-using-r-part-2/>. Acesso em: 24/8/2021b.
+
+

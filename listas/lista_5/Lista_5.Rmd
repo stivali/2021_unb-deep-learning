@@ -1,0 +1,438 @@
+---
+title: "Lista 5 - Redes neurais recorrentes"
+author: "Matheus Stivali"
+date: "08/11/2021"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+### carregando pacotes
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(tensorflow)
+library(keras)
+library(magick)
+##
+library(xts)
+library(zoo)
+library(astsa)
+library(forecast)
+library(tseries)
+library(uroot)
+```
+
+# Introdução
+
+Este trabalho tem como objetivo implementar uma rede neural recorrente para a previsão de séries de tempo. 
+
+As redes neurais recorrentes diferenciam-se das redes *feed foward* porque enquanto a informação flui em apenas um sentido nessas últimas, nas redes recorrentes existe retroalimentação. Isto quer dizer que as saídas de uma camada são utilizadas pela própria camada (ou mesmo em camadas anteriores) na instância seguinte, por exemplo.
+
+Para uma rede *feed forward* processar dados sequenciais (um texto, uma série de preços, ...) seria necessário a rede ler toda a sequencia de uma só vez para poder processar a informação e, ainda assim, a informação da ordem sequencial entre as entradas seria perdida.
+
+Nas *redes recorrentes* as informações são processadas sequencialmente. Avança-se aos próximos elementos da sequencia mantendo um **estado** que armazena a informação das iterações anteriores. É o uso dessa informação das iterações anteriores, a retroalimentação, que caracteriza as redes recorrentes.
+
+
+![**Fonte:** CHOLLET; ALLAIRE, 2018](E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/imagens/RNN1.png){ width=50% }
+
+
+A cada período t a RNN considera o estado (que pode ser o output de t-1) e as features para gerar o output em t.
+
+Embora as redes recorrentes sejam versáteis para processar dados sequenciais elas apresentam problemas conhecidos em sequencias longas. Trata-se, por exemplo, do *vanishing gradient problem* em que defasagens mais distantes não conseguem atualizar os pesos devido ao valor do gradiente se reduzir demais.
+
+
+Como solução para esse problema há uma arquitetura diferenciada de RNN conhecida como **Long Short Term Memory**. As unidades desse tipo de rede trabalham com dois estados em seu processamento, um estado de "curto prazo", mais influenciado pela informação imediatamente anterior e outro, de longo prazo, com informações mais perenes que também são atualizadas na unidade.
+
+
+![**Fonte:** https://colah.github.io/posts/2015-08-Understanding-LSTMs/](E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/imagens/RNN-and-LSTM-comparison-chart.jpg){ width=50% }
+
+
+Nesse trabalho utililzaremos uma arquitetura LSTM para ajustar uma série de tempo.
+
+A série considerada (Y) tem 334 observações diárias no conjunto de treinamento/validação e o objetivo é prever as 31 observações faltantes para se completar um ano.
+
+Há outras duas séries (X1 e X2, com 365 observações) que podem afetar o comportamento de Y de alguma forma desconhecida. O comportamento de cada série é ilustrado no gráfico abaixo.
+
+
+```{r dados}
+######################################
+## Leitura do excel
+######################################
+dados <- read_excel("E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/Lista_5 Dados.xlsx")
+
+######################################
+## Duplicando as variáveis em formato xts
+######################################
+dias <- seq(as.Date("2019-01-01" ), length=365, by=1)
+dados$y_ts <- xts(dados$y, order.by=dias)
+dados$x1_ts <- xts(dados$x_1, order.by=dias)
+dados$x2_ts <- xts(dados$x_2, order.by=dias)
+periodicity(dados$y_ts)
+rm(dias)
+
+## Em formato de série de tempo
+y_ts_treino <- dados$y_ts[1:334]
+x_ts_treino <- dados[1:334,6:7]
+x_ts_teste <- dados[335:365,6:7]
+
+######################################
+## Inspeção visual das séries
+######################################
+par(mfrow = c(3, 1), mar=c(0,4,0,0), oma=c(2.5,2,1,1))
+plot.ts(dados$y_ts, ylab = "Y", xaxt = 'n', col = "blue")
+  abline(v=334, col="red")
+  abline(v=c(0,31,59,90,120,151,181,212,243,273,304,365), 
+         col = "azure4", lty = "dotted")
+plot.ts(dados$x1_ts, ylab = "X1", xaxt = 'n', col = "brown")
+  abline(v=c(0,31,59,90,120,151,181,212,243,273,304,334,365), 
+         col = "azure4", lty = "dotted")
+plot.ts(dados$x2_ts, ylab = "X2", xaxt = 'n', col = "darkgoldenrod")
+  axis(1, at = c(0,31,59,90,120,151,181,212,243,273,304,334,365), las=2)
+  abline(v=c(0,31,59,90,120,151,181,212,243,273,304,334,365), 
+         col = "azure4", lty = "dotted")
+```
+
+
+A inspeção visual da série Y mostra que ela apresenta alguma sazonalidade dentro dos meses, provavelmente correspondendo as semanas. Adicionalmente nota-se que a série tem tendências decrescente nos primeiros cinco meses do ano, com uma estabilidade ou crescimento nos meses seguintes.
+
+Como base de referência para o desempenho das redes implementadas a série também é modelada pela modelagem Box-Jenkins na parte final do trabalho.
+
+
+# 1. Ajustando uma rede neural recorrente previsão da série
+
+## 1.1. Long Short Term Memory
+
+A arquitetura LSTM usa a sigmoide e a tgh como funções de ativação e elas são sensíveis a magnitude dos valores. Por isso é usual normalizar os dados de entrada de forma que eles fiquem em uma escala similar.
+
+
+```{r padronizacao}
+###########################################################
+## PADRONIZAÇÃO
+##########################################################
+## CONJUNTO DE TREINAMENTO
+dados_padr_trein <- dados[1:334,2:4]
+fator_padr_trein <- as.matrix( 
+  rbind( c(sapply(dados_padr_trein, mean)),
+         c(sapply(dados_padr_trein, sd))
+  ))
+row.names(fator_padr_trein) <- c("mean","sd")
+
+dados_padr_trein$y <-
+    (dados_padr_trein$y - fator_padr_trein[1,1]) / fator_padr_trein[2,1]
+dados_padr_trein$x_1 <-
+  (dados_padr_trein$x_1 - fator_padr_trein[1,2]) / fator_padr_trein[2,2]
+dados_padr_trein$x_2 <-
+  (dados_padr_trein$x_2 - fator_padr_trein[1,3]) / fator_padr_trein[2,3]
+
+## CONJUNTO DE TESTE
+dados_padr_teste <- dados[335:365,2:4]
+fator_padr_teste <- as.matrix( 
+  rbind( c(sapply(dados_padr_teste, mean)),
+         c(sapply(dados_padr_teste, sd))
+  ))
+row.names(fator_padr_teste) <- c("mean","sd")
+
+dados_padr_teste$x_1 <-
+  (dados_padr_teste$x_1 - fator_padr_teste[1,2]) / fator_padr_teste[2,2]
+dados_padr_teste$x_2 <-
+  (dados_padr_teste$x_2 - fator_padr_teste[1,3]) / fator_padr_teste[2,3]
+```
+
+
+
+Ao se ajustar uma rede recorrente LSTM no *keras* ele espera o formato de entrada um **array com três dimensões** `(samples, timesteps, input_dim)`. 
+
+A dimensão `samples` corresponde ao número de observações (o total de observações menos o número de defasagens). A dimensão `timesteps` corresponde ao número de defasagens utilizados a cada passo de treinamento/previsão. Já a dimensão `input_dim` corresponde ao número de *features* ou variáveis explicativas considerado no treinamento/privisão da série. Para uma série de tempo univariada `input_dim = 1`, para uma série que considera uma variável explicativa além da própria série `input_dim = 2`, e assim por diante.
+
+Considerando o caso concreto, tem-se `334` observações no conjunto de treinamento. Dada a frequência diária das observações e a possibilidade de comportamento sazonal dentro das semanas e/ou entre as semanas uma primeira tentativa seria considerar `14` defasagens. Como temos duas variáveis explicativas, as dimensões do array seriam:
+
+`(samples, timesteps, input_dim) = (334-14, 14, 3) = (320, 14, 3)`
+
+Abaixo as séries originais são organizadas neste forma de array.
+
+
+
+```{r arrays}
+###########################################################
+## DADOS NO FORMATO DE ARRAY 3D
+##########################################################
+
+
+previsao = 1    # Número de passos a frente que se vai prever
+defasagens = 14 # Número de passos atrás considerados a cada novo passo
+
+########################
+## ARRAY DE FEATURES TREINAMENTO
+########################
+
+array_y <- t(sapply(
+                    1:(length(dados_padr_trein$y) - defasagens),
+                    function(x) dados_padr_trein$y[x:(x + defasagens - 1)]
+             ))
+array_x1 <- t(sapply(
+                    1:(length(dados_padr_trein$x_1) - defasagens),
+                    function(x) dados_padr_trein$x_1[x:(x + defasagens - 1)]
+             ))
+array_x2 <- t(sapply(
+                    1:(length(dados_padr_trein$x_2) - defasagens),
+                    function(x) dados_padr_trein$x_2[x:(x + defasagens - 1)]
+             ))
+
+x_arr_treino = array(c(array_y, array_x1, array_x2),
+                     dim =c(320,14,3))
+
+head(x_arr_treino)
+rm(array_y, array_x1, array_x2)
+
+########################
+## ARRAY DA DEPENDENTE
+########################
+
+array_y2 <- sapply(
+              defasagens + 1: (length(dados_padr_trein$y) - defasagens),
+              function(x) dados_padr_trein$y[x:(x + previsao - 1)]
+             )
+
+y_arr_treino = array(c(array_y2),
+                     dim =c(length(dados_padr_trein$y) - defasagens,
+                            previsao,
+                            1))
+head(y_arr_treino)
+rm(array_y2)
+
+```
+
+
+O segundo passo é a definição da arquitetura da rede a ser treinada. Optou-se por duas camadas LSTM e uma camanda normal na saída.
+
+
+```{r lstm0}
+###########################################################
+## Especificação da rede LSTM
+##########################################################
+## layer_lstm
+## 	activation = Função de ativação default é a tangente hiperbólica
+## 	stateful = default FALSE. If TRUE, the last state for each sample 
+##               at index i in a batch will be used as initial state for 
+##               the sample of index i in the following batch.
+##  return_sequences = Boolean. Whether to return the last output in 
+##                     the output sequence, or the full sequence.
+###########################################################
+## time_distributed() The input should be at least 3D, and the dimension 
+##                    of index one will be considered to be the temporal 
+##                    dimension.
+##
+
+
+lstm_model1 <- keras_model_sequential()
+
+lstm_model1 %>%
+  layer_lstm(units = 64,                    # tamanho da layer
+       	 input_shape = c(14, 3),            # timesteps, input_dim
+       	 return_sequences = TRUE,
+	       stateful = FALSE) %>%
+  layer_dropout(rate = 0.2) %>%             # proporção de dropout
+  layer_lstm(units = 64,
+        return_sequences = TRUE) %>%
+  layer_dense(units = 1)
+  #time_distributed(keras::layer_dense(units = 1))
+
+
+###########################################################
+## Compilando o modelo
+##########################################################
+lstm_model1 %>%
+                compile(loss = 'mean_squared_error', 
+			                  optimizer = 'adam')
+
+summary(lstm_model1)
+
+###########################################################
+## Treinando a rede
+##########################################################
+
+history <- lstm_model1 %>% 
+                          fit(
+		                          x = x_arr_treino,
+		                          y = y_arr_treino,
+		                          batch_size = 1,
+		                          epochs = 40,
+		                          validation_split = 0.1,
+		                          callbacks = callback_early_stopping(
+		                            monitor = "val_loss",
+                                patience = 10,
+                                restore_best_weights = TRUE),
+		                          verbose = 1,
+		                          shuffle = FALSE)
+
+plot(history)
+
+```
+
+
+
+
+```{r previsao, eval = FALSE}
+###########################################################
+## Fazendo as previsões
+##########################################################
+
+n_previsao = 31 # Número de passos na sequência a serem previstos
+
+########################
+## ARRAY DE FEATURES TESTE
+########################
+
+x_arr_teste <- x_arr_treino[(320-n_previsao+1):320,,]
+
+#array_x1t <- t(sapply(
+#                      1:(length(dados_padr_teste$x_1) - defasagens),
+#                      function(x) dados_padr_teste$x_1[x:(x + defasagens - 1)]
+#               ))
+#array_x2t <- t(sapply(
+#                      1:(length(dados_padr_teste$x_2) - defasagens),
+#                      function(x) dados_padr_teste$x_2[x:(x + defasagens - 1)]
+#               ))
+#
+#x_arr_teste = array(c(array_base,array_x1t, array_x2t),
+#                      dim =c(45,14,3))
+
+head(x_arr_teste)
+#rm(array_yt, array_x1t, array_x2t)
+
+lstm_forecast1 <- lstm_model1 %>%
+    					        predict(x_arr_teste, batch_size = 31) %>%
+                      .[, , 1]
+
+
+########################
+## PREVISÃO TEM 14 VALORES PARA CADA Y_t
+########################
+lstm_forecast2 <- lstm_forecast1[,1]
+# Transformando os valores previstos para a escala original
+lstm_forecast2 <- (lstm_forecast2 * fator_padr_trein[2,1]) +           
+                  fator_padr_trein[1,1]
+dias2 <- seq(as.Date("2019-12-01" ), length=31, by=1)
+lstm_forecast3 <- xts(lstm_forecast2, order.by=dias2)
+
+serie <- rbind(y_ts_treino,lstm_forecast3)
+plot.ts(serie)
+
+install.packages("writexl")
+library("writexl")
+write_xlsx(as.data.frame(lstm_forecast3),"E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/lstm_forecast3.xlsx")
+
+```
+
+
+![](E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/imagens/serie.png){ width=120% }
+
+
+
+
+
+
+# 2. Análise de série de tempo convencional
+
+Nesta seção é realizado o ajuste da série Y seguinto a abordagem convencional da metodologia Box-Jenkins. Assim, inicia-se a análise pela função de autocorrelação e pela função de autocorrelação parcial. 
+
+
+```{r correlograma}
+#################################################
+## Função de auto-correlação
+#################################################
+par(mfrow = c(1, 1))
+acf2(dados$y_ts, main="Função de autocorrelação Y")
+```
+
+
+Nos correlogramas acima nota-se a **função de autocorrelação (ACF)** com decaimento gradual (lento) e um pico na **função de autocorrelação parcial (PACF)** na defasagem -1 sugere um processo autoregressivo de ordem 1. Adicionalmente, os picos na PACF nos dias 6 e 7, e 13 e 14 sugerem um comportamento sazonal semanal ou quinzenal, também refletido no ACF com decaimento gradual nas defasagens.
+
+Já a análise da **função de autocorrelação cruzada (CCF)** em relação as variáveis explicativas mostra um impacto contemporâneo relevante X1 (positivo) e de X2 (negativo). Sugere ainda um possível efeito positivo da décima segunda defasagem de X1.
+  
+```{r ccf}
+#################################################
+## Análise de correlação cruzada
+#################################################
+cor(dados[1:334,2:4])
+
+par(mfrow = c(2, 1), mar=c(0,1,0,0), oma=c(0,0,0,0))
+ccf2(as.ts(y_ts_treino), as.ts(x_ts_treino$x1_ts),
+    main="Função de correlação cruzada Y vs X1")
+ccf2(as.ts(dados$y_ts), as.ts(x_ts_treino$x2_ts), 
+    main="Função de correlação cruzada Y vs X2")
+```
+
+
+
+
+
+```{r sarima}
+m1 <-
+  sarima(y_ts_treino, p=1, d=0, q=0, P=1, D=0, Q=0, S=7,
+         xreg = x_ts_treino,
+         no.constant = TRUE, details = FALSE)
+m2 <-
+  sarima(y_ts_treino, p=1, d=0, q=1, P=1, D=0, Q=0, S=7,
+         xreg = x_ts_treino,
+         no.constant = TRUE, details = FALSE)
+m3 <-
+  sarima(y_ts_treino, p=1, d=0, q=1, P=1, D=0, Q=1, S=7,
+         xreg = x_ts_treino,
+         no.constant = TRUE, details = FALSE)
+m4 <-
+  sarima(y_ts_treino, p=1, d=0, q=1, P=1, D=0, Q=1, S=7,
+         no.constant = TRUE, details = FALSE)
+m5 <-
+  sarima(y_ts_treino, p=1, d=0, q=1, P=1, D=0, Q=1, S=14,
+         no.constant = TRUE, details = FALSE)
+m5 <-
+  sarima(y_ts_treino, p=1, d=0, q=1, P=1, D=0, Q=1, S=14,
+         xreg = x_ts_treino, details = FALSE)
+
+library(stargazer)
+stargazer(m1$fit,
+          m2$fit,
+          m3$fit,
+          m4$fit,
+          m5$fit, 
+          title = "Comparação dos Modelos", align=TRUE, type = 'text')
+```
+
+
+A seguir é feita a previsão utilizando a especificação (4).
+
+
+
+```{r prev_sarima}
+sarima.for(y_ts_treino, n.ahead=31, p=1, d=0, q=1, P=1, D=0, Q=1, S=7, 
+           xreg = x_ts_treino,
+           newxreg = x_ts_teste)
+```
+
+
+# 3. Recursos consultados
+
+CHOLLET, F.; ALLAIRE, J. J. Deep learning with R. Shelter Island, NY: Manning Publications Co, 2018.
+
+GÉRON, A. Mãos à Obra Aprendizado de Máquina com Scikit-Learn e TensorFlow. Rio de Janeiro, RJ: Alta Books, 2019.
+
+GOMES, D. T. Modelos de redes neurais recorrentes para previsão de series temporais de memorias curta e longa, 18. nov. 2005. Mestre em Estatística, Campinas: Universidade Estadual de Campinas. 
+
+GOODFELLOW, I.; BENGIO, Y.; COURVILLE, A. Deep learning. Cambridge, Massachusetts: The MIT Press, 2016.
+
+LIQUID BRAIN. Recurrent Neural Network (RNN) in R | A Rstudio Tutorial on Keras and Tensorflow. 2020.
+
+OLAH, C. Understanding LSTM Networks. colah’s blog, 27. ago. 2015. Disponível em: <https://colah.github.io/posts/2015-08-Understanding-LSTMs/>. Acesso em: 4/11/2021.
+
+
+
+
+
+
+

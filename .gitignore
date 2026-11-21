@@ -1,0 +1,53 @@
+# R / RStudio session files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+.Renviron
+.Rprofile.local
+
+# R Markdown and knitr intermediate files (keep .Rmd and .html)
+*_cache/
+*_files/
+*.utf8.md
+*.knit.md
+
+# Python / virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.ipynb_checkpoints/
+
+# Datasets and serialized outputs
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.rds
+*.RDS
+*.rda
+*.RData
+*.parquet
+*.feather
+*.dta
+*.zip
+*.7z
+
+# Assignment PDFs and other local documents
+*.pdf
+
+# Temporary, system and editor files
+*~
+*.bak
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+
+# The original exercise assets and rendered HTML reports are intentionally tracked.
+# Do not ignore assets/, image formats (PNG/JPG), *.Rmd, or *.html.

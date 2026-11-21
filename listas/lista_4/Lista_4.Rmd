@@ -1,0 +1,330 @@
+---
+title: "Lista 4 - Classificação de imagens"
+author: "Matheus Stivali"
+date: "16/10/2021"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+### carregando pacotes
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(tensorflow)
+library(keras)
+library(magick)
+```
+
+# Introdução
+
+O objetivo deste trabalho é implementar uma rede neural convolucional (RNC) na linguagem R capaz de classificar as imagens de impressões digitais quanto ao sexo da pessoa.
+
+O banco de dados está dividido em um conjunto de treino, com 740 impressões digitais de mulheres e 3260 impressões digitais de homens, e um conjunto de teste com 2000 impressões digitais. As imagens do banco estão em formato bitmap (BMP) e em sua maioria elas têm definição **definição de 96 pixels de largura e 103 pixels de altura**. Contudo, há 40 imagens com dimensões maiores (241x298 pixels) no banco de treino e 4 imagens com essas dimensões no banco de teste.
+
+Apenas as imagens do banco de treino possuem identificação e dependendo a implementação os arquivos dessas imagens foram mantidos na mesma pasta ou divididos em pastas diferentes de acordo com sua identificação.
+
+
+# 1. Implementação 1 - Imagemagick + Keras 
+
+Esta implementação faz a leitura, pré-processamento, e conversão dos arquivos de imagem em arrays de dados pelo pacote Imagemagick e posterior análise e classificação pelo Keras/Tensorflow.
+
+As imagens originalmente em formato Bitmap lidas pelo default do imagemagick como `colorspace = sRGB`, resultando em 4 canais (Red, Gray, Blue, e White point). Pela natureza das imagens que não tem características de cor relavantes, optou-se pela conversão em tons de cinza (`colorspace = gray`), com apenas 1 canal.
+
+O tamanho das imagens foi padronizado com o comando `image_resize`, mas foi necessário forçar a definição uma vez que a razão entre as dimensões 241x298 e 96x103 é diferente.
+
+Os arquivos de homens e mulheres foram mantidos na mesma pasta e os rótulos obtidos da primeira letra de cada arquivo utilizando a busca de expressões regulares.
+
+
+```{r }
+#######################################################
+## Identificando os arquivos e carregando as figuras
+#######################################################
+treino <- "E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/Dados/Treino2"
+teste <- "E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/Dados/Teste"
+categorias <- list.dirs(treino)[-1]
+names(categorias) <- c("Homem", "Mulher")
+
+
+## Lista dos arquivos
+arq_trein <- categorias %>% 
+                    map( ~ list.files(., full.names = TRUE))
+
+## Carregando e convertendo de RGB para Grayscale
+fig_trein <- arq_trein %>% 
+                       map( ~ image_read(.)) %>% 
+                       map( ~ image_convert(., colorspace = "gray"))
+
+length(fig_trein$Homem)
+length(fig_trein$Mulher)
+
+
+#######################################################
+## Ajuste de tamanho
+#######################################################
+unique(image_info(fig_trein$Homem)$width)
+unique(image_info(fig_trein$Mulher)$width)
+fig_trein$larg_H <- image_info(fig_trein$Homem)$width
+fig_trein$larg_M <- image_info(fig_trein$Mulher)$width
+
+for(i in 1:length(fig_trein$Homem)){
+  if(fig_trein$larg_H[i]==241){
+    fig_trein$Homem[i] <- image_resize(fig_trein$Homem[i],"96x103!")
+  }
+}
+rm(i)
+for(i in 1:length(fig_trein$Mulher)){
+  if(fig_trein$larg_M[i]==241){
+    fig_trein$Mulher[i] <- image_resize(fig_trein$Mulher[i],"96x103!")
+  }
+}
+rm(i)
+
+unique(image_info(fig_trein$Homem)$width)
+unique(image_info(fig_trein$Mulher)$width)
+fig_trein <- fig_trein[-c(3,4)]
+
+#######################################################
+## Rótulos
+#######################################################
+rot_trein <- arq_trein %>% 
+                       map( ~ str_extract(., regex("M_|F_"))) %>%
+                       map( ~ strtrim(., 1)) 
+
+
+rot_trein2 <- rot_trein %>% 
+                        unlist() %>% 
+                        as.data.frame()
+
+rownames(rot_trein2) <- NULL
+colnames(rot_trein2) <- c("Sexo")
+rot_trein2$Mulher <- 0
+rot_trein2$Mulher[rot_trein$Sexo=="F"] <- 1
+
+```
+Com os objetos de imagem e rótulos devidamente criados o passo seguinte é a conversão das imagens em arrays com as informações das imagens.
+
+```{r }
+#######################################################
+## Figuras em formato de matrizes
+#######################################################
+
+fig_matriz <- vector(length(fig_trein), mode="list")
+
+for(i in 1:2) {
+  fig_matriz[[i]] <- map(1:length(fig_trein[[i]]), 
+                       ~ as.integer(
+                         image_data(
+                           fig_trein[[i]][.]
+                         )
+                       )
+  )
+  names(fig_matriz[[i]]) <- rot_trein[[i]]
+}
+
+names(fig_matriz) <- c("Homem", "Mulher")
+```
+
+A análise inicial dos arrays mostra algumas diferenças sutis entre as impressões de homens e mulheres. Há maior proporção de pixels pretos nas impressões de homens em relação a das mulheres (o que poderia representar que, em média, os dedos dos homens são maiores que o das mulheres).
+
+```{r }
+################################################
+## Análise Inicial
+################################################
+
+## Proporção de pixels pretos nas digitais
+mulheres <- fig_matriz$Mulher %>%
+                             map_dbl( ~ mean(.==0))
+
+homens <- fig_matriz$Homem %>%
+                           map_dbl( ~ mean(.==0))
+
+summary(mulheres)
+summary(homens)
+
+qplot(mulheres, geom="density", col = 2) + 
+    geom_density(aes(homens), colour="red")
+```
+
+
+
+```{r keras1}
+################################################
+## Implementação no Keras
+################################################
+
+modelo <- keras_model_sequential()
+
+modelo %>%
+          layer_conv_2d(filters = 30,
+                        kernel_size = c(5,5),
+                        activation = "relu",
+                        input_shape = c(103,96,1)) %>%
+          layer_conv_2d(filters = 30,
+                kernel_size = c(3,3),
+                activation = "relu") %>%
+          layer_dropout(rate = 0.2)  %>%
+          layer_conv_2d(filters = 60,
+                kernel_size = c(3,3),
+                activation = "relu") %>%
+          layer_conv_2d(filters = 60,
+                kernel_size = c(3,3),
+                activation = "relu") %>% # activation = NULL
+          layer_max_pooling_2d(pool_size = c(2,2)) %>%
+          layer_dropout(rate = 0.2)  %>%
+          layer_flatten()  %>%
+          layer_dense(units = 256, 
+                      activation = "relu",) %>%
+          layer_dropout(rate = 0.2)  %>%
+          layer_dense(units = 3,
+                      activation = "sigmoid")
+
+
+summary(modelo)
+```
+
+
+
+
+# 2. Implementação 2 - EBImage + Keras
+
+```{r }
+
+```
+
+
+# 3. Implementação 3 - Keras
+
+Esta implementação segue o exercício do capítulo 5 de CHOLLET & ALLAIRE (2018). Para tranto o conjunto de treinamento foi dividido em 4 pastas. Duas com as imagens usadas para o treinamento (80% do total, 2600 homens e 576 mulheres) e duas com as usadas para validação (660 homens e 164 mulheres).
+
+```{r eval = FALSE}
+################################################
+## Implementação direto no Keras (Cholet)
+################################################
+
+# É necessário instalar um pacote no python antes
+#reticulate::py_install("pillow",env=tf)
+#Anaconda prompt:
+#conda env list
+#conda activate r-reticulate
+#conda install pillow scipy
+
+
+#######################################################
+## Identificando os diretórios e carregando as figuras
+#######################################################
+rm(list = ls())
+treino <- "E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/Dados/Treino/treino"
+valida <- "E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/Dados/Treino/valida"
+teste <- "E:/Dropbox/Estatística-UnB/Redes Neurais Profundas/R/Dados/Teste"
+
+## Normalização dos valores de [0,255] para [0,1]
+aj_tamanho <- image_data_generator(rescale = 1/255)
+
+train_generator <- flow_images_from_directory(
+  treino,
+  aj_tamanho,
+  target_size = c(96, 103),
+  color_mode = "grayscale",
+  batch_size = 32,
+  class_mode = "binary"
+)
+
+valida_generator <- flow_images_from_directory(
+  valida,
+  aj_tamanho,
+  target_size = c(96, 103),
+  color_mode = "grayscale",
+  batch_size = 32,
+  class_mode = "binary"
+)
+
+
+batch <- generator_next(train_generator)
+str(batch)
+
+#######################################################
+## Definindo a rede
+#######################################################
+
+modelo_cholet <- keras_model_sequential()
+
+modelo_cholet %>%
+  layer_conv_2d(filters = 32, kernel_size = c(5, 5), activation = "relu",
+                input_shape = c(96, 103, 1)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = "relu") %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_conv_2d(filters = 32, kernel_size = c(3, 3), activation = "sigmoid") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = "relu") %>%
+  layer_dropout(rate = 0.25) %>%
+  layer_conv_2d(filters = 64, kernel_size = c(3, 3), activation = "relu") %>%
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  layer_flatten() %>%
+  layer_dense(units = 320, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+summary(modelo_cholet)
+
+## Compilar o Modelo
+
+modelo_cholet %>% compile(
+  loss = "binary_crossentropy",
+  optimizer = optimizer_rmsprop(),
+  #optimizer = optimizer_rmsprop(learning_rate = 1e-4),
+  metrics = c("acc")
+)
+
+history <- modelo_cholet %>% 
+                  fit_generator(train_generator,
+                                steps_per_epoch = 100,
+                                epochs = 20,
+                                validation_data = valida_generator
+                                )
+
+plot(history)
+
+##########################
+## Previsão
+##########################
+
+#teste_generator <- flow_images_from_directory(
+#  teste,
+#  aj_tamanho,
+#  target_size = c(96, 103),
+#  color_mode = "grayscale",
+#  batch_size = 32
+#)
+
+#previ_teste <- predict_classes(modelo_cholet, teste)
+```
+
+
+
+# X. Recursos consultados
+
+BUKS. Fingerprint Gender Classification(CNN). The Startup, 6. jun. 2020. Disponível em: <https://medium.com/swlh/fingerprint-gender-classification-cnn-8b052a162a93>. Acesso em: 17/10/2021.
+
+CHOLLET, F.; ALLAIRE, J. J. Deep learning with R. Shelter Island, NY: Manning Publications Co, 2018.
+
+GÉRON, A. Mãos à Obra Aprendizado de Máquina com Scikit-Learn e TensorFlow. Rio de Janeiro, RJ: Alta Books, 2019.
+
+GOODFELLOW, I.; BENGIO, Y.; COURVILLE, A. Deep learning. Cambridge, Massachusetts: The MIT Press, 2016.
+
+RAI, B. Image Recognition & Classification with Keras in R | TensorFlow for Machine Intelligence by Google. 2018a.
+
+RAI, B. Convolutional Neural Network wirh Keras & TensorFlow in R | Large Scale Image Recognition. 2018b.
+
+SHARMA, A. A Layman’s Guide to Building Your First Image Classification Model in R Using Keras. Disponível em: <https://towardsdatascience.com/a-laymans-guide-to-building-your-first-image-classification-model-in-r-using-keras-b285deac6572>. Acesso em: 20/10/2021a.
+
+SHARMA, A. Understanding a Neural Network through scratch coding in R; A novice guide. Disponível em: <https://towardsdatascience.com/understanding-a-neural-network-through-scratch-coding-in-r-a-novice-guide-a81e5777274b>. Acesso em: 20/10/2021b.
+
+
+
+
+
