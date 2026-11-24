@@ -49,3 +49,9 @@ The repository includes the exercise solutions in `.Rmd` and HTML formats. Assig
 ```
 
 The exercise narratives and code comments are primarily in Portuguese, as originally submitted.
+
+## Purpose and reuse
+
+This repository is maintained as a record of academic coursework completed at the University of Brasília (UnB) in 2021. It is intended for educational and portfolio purposes rather than as a reusable software package.
+
+No general open-source license is granted. Third-party teaching materials and externally sourced code remain subject to their respective copyright and licensing terms.
